@@ -1,8 +1,12 @@
 from pathlib import Path
+import yaml
 import argparse
 from functools import partial
 import jax.numpy as jnp
-from jaxpm.nn import CNN
+from jaxpm.nn import CNN, NeuralSplineFourierFilter
+import sys
+from absl import flags, logging
+from ml_collections import config_flags
 
 # from jaxpm.pm import make_hamiltonian_ode_fn
 import jax
@@ -58,77 +62,26 @@ def get_mse_pos(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.parse_args()
-    parser.add_argument(
-        "--n_channels_hidden",
-        type=int,
-        default=16,
-    )
-    parser.add_argument(
-        "--n_convolutions",
-        type=int,
-        default=3,
-    )
-    parser.add_argument(
-        "--n_linear",
-        type=int,
-        default=2,
-    )
-    parser.add_argument(
-        "--input_dim",
-        type=int,
-        default=2,
-    )
-    parser.add_argument(
-        "--kernel_size",
-        type=int,
-        default=3,
-    )
-    parser.add_argument(
-        "--mesh_lr",
-        type=int,
-        default=32,
-    )
-    parser.add_argument(
-        "--mesh_hr",
-        type=int,
-        default=64,
-    )
-    parser.add_argument(
-        "--n_train_sims",
-        type=int,
-        default=2,
-    )
-    parser.add_argument(
-        "--n_val_sims",
-        type=int,
-        default=2,
-    )
-    parser.add_argument(
-        "--loss",
-        type=str,
-        default="mse_potential",
-    )
-    parser.add_argument(
-        "--weight_decay",
-        type=float,
-        default=1.0e-5,
-    )
-    args = parser.parse_args()
+    FLAGS = flags.FLAGS
+    config_flags.DEFINE_config_file("config", "config.py", "Training configuration")
+    FLAGS(sys.argv)
+    print('Running configuration')
+    print(FLAGS.config)
+    config = FLAGS.config
 
     def ConvNet(
         x,
         positions,
         scale_factors,
     ):
+        kernel_size = config.correction_model.kernel_size
         cnn = CNN(
-            n_channels_hidden=args.n_channels_hidden,
-            n_convolutions=args.n_convolutions,
-            n_linear=args.n_linear,
-            input_dim=args.input_dim,
+            n_channels_hidden=config.correction_model.n_channels_hidden,
+            n_convolutions=config.correction_model.n_convolutions,
+            n_linear=config.correction_model.n_linear,
+            input_dim=config.correction_model.input_dim,
             output_dim=1,
-            kernel_shape=(args.kernel_size, args.kernel_size, args.kernel_size),
+            kernel_shape=(kernel_size, kernel_size, kernel_size),
         )
         return cnn(
             x,
@@ -136,10 +89,10 @@ if __name__ == "__main__":
             scale_factors,
         )
 
-    mesh_lr = args.mesh_lr
-    mesh_hr = args.mesh_hr
-    n_train_sims = args.n_train_sims
-    n_val_sims = args.n_val_sims
+    mesh_lr = config.data.mesh_lr
+    mesh_hr = config.data.mesh_hr
+    n_train_sims = config.data.n_train_sims
+    n_val_sims = config.data.n_val_sims
     data_dir = Path(
         f"/n/holystore01/LABS/itc_lab/Users/ccuestalazaro/pm2nbody/data/matched_{mesh_lr}_{mesh_hr}/"
     )
@@ -147,7 +100,7 @@ if __name__ == "__main__":
         "/n/holystore01/LABS/itc_lab/Users/ccuestalazaro/pm2nbody/models/"
     )
     box_size = 256.0
-    loss = args.loss
+    loss = config.training.loss
 
     # *** GET DATA
     scale_factors = jnp.load(data_dir / f"scale_factors.npy")
@@ -189,13 +142,17 @@ if __name__ == "__main__":
         jnp.array([1.0]),
     )
     run = wandb.init(
-        project="pm2nbody",
-        config= vars(args),
+        project=config.wandb.project,
+        config= config.to_dict(), 
         dir = output_dir,
     )
     print(f'Run name: {run.name}')
     run_dir = output_dir / f'{run.name}'
     run_dir.mkdir(exist_ok=True, parents=True)
+
+    with open(run_dir / 'config.yaml', 'w') as f:
+        yaml.dump(config.to_dict(), f)
+
 
     if loss == "mse_potential":
         single_loss_fn = get_frozen_potential_loss(
@@ -226,10 +183,9 @@ if __name__ == "__main__":
 
     optimizer = optax.adamw(
         learning_rate=schedule,
-        weight_decay=args.weight_decay,
+        weight_decay=config.training.weight_decay,
     )
 
-    losses = []
     opt_state = optimizer.init(params)
 
     early_stop = EarlyStopping(min_delta=1e-3, patience=4)
