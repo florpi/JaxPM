@@ -2,6 +2,9 @@ import jax
 import jax.numpy as jnp
 import haiku as hk
 
+from jaxpm.painting import cic_read
+from typing import Tuple
+
 def _deBoorVectorized(x, t, c, p):
     """
     Evaluates S(x).
@@ -58,3 +61,107 @@ class NeuralSplineFourierFilter(hk.Module):
     ak = jnp.concatenate([jnp.zeros((3,)), k, jnp.ones((3,))])
 
     return _deBoorVectorized(jnp.clip(x/jnp.sqrt(3), 0, 1-1e-4), ak, w, 3)
+
+
+class Rescale(hk.Module):
+  def __init__(self, n_input):
+    super().__init__()  
+    self.scale = hk.get_parameter("scale", [n_input], init=jnp.ones)
+    self.bias = hk.get_parameter("bias", [n_input], init=jnp.zeros)
+
+  def __call__(self, x):
+    return self.scale * x + self.bias
+
+class ConvBlock(hk.Module):
+    def __init__(
+        self,
+        output_channels: int,
+        kernel_shape: Tuple[int] = (3, 3, 3),
+        padding: str = "SAME",
+        batch_norm: bool = False,
+        activation=jax.nn.relu,
+    ):
+        super().__init__()
+        self.conv = hk.Conv3D(
+            output_channels=output_channels,
+            kernel_shape=kernel_shape,
+            padding=padding,
+        )
+        if batch_norm:
+            self.batch_norm = hk.BatchNorm(decay_rate=0.9, epsilon=1e-5)
+        else:
+            self.batch_norm = None
+        self.activation = activation
+
+    def __call__(self, x):
+        x = self.conv(x)
+        if self.batch_norm is not None:
+            x = self.batch_norm(x)
+        x = self.activation(x)
+        return x
+
+
+class CNN(hk.Module):
+    def __init__(
+        self,
+        n_channels_hidden: int,
+        n_convolutions: int,
+        n_linear: int,
+        input_dim: int = 2,
+        output_dim: int = 1,
+        kernel_shape: Tuple[int] = (3, 3, 3),
+    ):
+        super().__init__(name="CNN")
+        self.learned_norm = Rescale(input_dim)
+        self.conv_block = hk.Sequential(
+            [
+                ConvBlock(output_channels=n_channels_hidden, kernel_shape=kernel_shape)
+                for _ in range(n_convolutions)
+            ]
+        )
+        self.read_featues_at_pos = jax.vmap(
+            cic_read,
+            in_axes=(-1, None),
+        )
+        linear_layers = [hk.Linear(n_channels_hidden) for _ in range(n_linear)] + [
+            hk.Linear(output_dim)
+        ]
+        self.fcn_block = hk.Sequential(
+            linear_layers,
+        )
+
+    def concatenate_globals(self, features_at_pos, global_features):
+        if global_features.ndim < 2:
+            global_features = jnp.expand_dims(global_features, axis=-1)
+        broadcast_globals = jnp.broadcast_to(
+            global_features,
+            (
+                features_at_pos.shape[0],
+                global_features.shape[-1],
+            ),
+        )
+        return jnp.concatenate([features_at_pos, broadcast_globals], axis=-1)
+
+    def __call__(
+        self,
+        x,
+        positions,
+        global_features=None,
+    ):
+        x = self.learned_norm(x)  # [LR, LR, LR, input_dim]
+        x = self.conv_block(x)  # [LR, LR, LR, n_channels_hidden]
+        # swap axes to make the last axis the feature axis for the linear layers
+        features_at_pos = self.read_featues_at_pos(
+            x, positions
+        ).swapaxes(-2, -1)
+        # [n_particles, n_channels_hidden]
+        # Add time as a feature
+        if global_features is not None:
+            features_at_pos = self.concatenate_globals(
+                features_at_pos, 
+                global_features,
+            )
+            # [n_particles, n_channels_hidden + 1]
+        features_at_pos = self.fcn_block(features_at_pos)
+        # [n_particles, output_dim]
+        return features_at_pos
