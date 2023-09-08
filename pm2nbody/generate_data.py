@@ -33,8 +33,20 @@ def downsample_field(
     result = result[::downsampling_factor, ::downsampling_factor, ::downsampling_factor]
     return result
 
+def arange_particles_in_mesh(
+    n_particles,
+    mesh_shape,
+):
+    particles_per_cell = n_particles // np.prod(mesh_shape)
+    spacing = 1. / particles_per_cell 
+    cell_idxs = np.repeat(np.arange(np.prod(mesh_shape)), particles_per_cell)
+    cell_coords = np.unravel_index(cell_idxs, mesh_shape)
+    offsets = np.arange(particles_per_cell) * spacing
+    offsets = np.tile(offsets, np.prod(mesh_shape))
+    return np.stack(cell_coords, axis=-1) + offsets[:, None]
 
 def get_ics(
+    n_particles,
     mesh_shape,
     linear_field,
     snapshot,
@@ -42,9 +54,10 @@ def get_ics(
     sigma8,
 ):
     # Create particles
-    particles = jnp.stack(
-        jnp.meshgrid(*[jnp.arange(s) for s in mesh_shape]), axis=-1
-    ).reshape([-1, 3])
+    particles = arange_particles_in_mesh(
+        n_particles=n_particles,
+        mesh_shape=mesh_shape,
+    )
     cosmo = jc.Planck15(Omega_c=omega_c, sigma8=sigma8)
     # Initial displacement
     dx, p, f = lpt(cosmo, linear_field, particles, snapshot)
@@ -96,9 +109,10 @@ if __name__ == "__main__":
     out_dir = Path("/n/holystore01/LABS/itc_lab/Users/ccuestalazaro/pm2nbody/data/")
     mesh_hr = 64
     mesh_lr = 32
+    n_particles = 64**3
     out_dir /= f"matched_{mesh_lr}_{mesh_hr}"
     out_dir.mkdir(exist_ok=True, parents=True)
-    snapshots = jnp.linspace(0.01, 1.0, 25)
+    snapshots = jnp.linspace(0.1, 1.0, 25)
     mesh_shape_hr = (mesh_hr, mesh_hr, mesh_hr)
     mesh_shape_lr = (mesh_lr, mesh_lr, mesh_lr)
     L = 256.0
@@ -123,6 +137,7 @@ if __name__ == "__main__":
             downsampling_factor=mesh_hr // mesh_lr,
         )
         ics_hr = get_ics(
+            n_particles=n_particles,
             mesh_shape=mesh_shape_hr,
             linear_field=linear_hr,
             snapshot=snapshots[0],
@@ -130,6 +145,7 @@ if __name__ == "__main__":
             sigma8=sigma8,
         )
         ics_lr = get_ics(
+            n_particles=n_particles,
             mesh_shape=mesh_shape_lr,
             linear_field=linear_lr,
             snapshot=snapshots[0],
@@ -149,9 +165,6 @@ if __name__ == "__main__":
             sigma8=sigma8,
             initial_conditions=ics_lr,
         )
-
-        mean_n_hr = len(pos_hr[0]) / L**3
-        mean_n_lr = len(pos_lr[0]) / L**3
 
         pot_hr, pot_lr, pot_grid_lr = [], [], []
         for s in range(len(snapshots)):
