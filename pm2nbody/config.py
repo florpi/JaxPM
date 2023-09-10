@@ -12,8 +12,8 @@ def get_config():
     wandb.name = None
 
     config.data = data = ml_collections.ConfigDict()
-    data.mesh_lr = 32
-    data.mesh_hr = 64
+    data.mesh_lr = 64
+    data.mesh_hr = 128
     data.n_train_sims = 2
     data.n_val_sims = 2
 

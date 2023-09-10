@@ -116,15 +116,12 @@ class PMDataset:
 
 def load_dataset_for_sim_idx_list(idx_list, mesh_hr, mesh_lr, data_dir):
     grid_factor = mesh_hr / mesh_lr
-    particle_factor = mesh_hr / mesh_lr
-    up_resolution_factor = grid_factor * particle_factor
-
     low_res_data, high_res_data = [], []
     for idx in idx_list:
         pos_hr, vel_hr, grav_pot_hr = get_data(
             data_dir=data_dir,
             n_mesh=mesh_hr,
-            downsampling_factor=mesh_hr // mesh_lr,
+            downsampling_factor=None,#mesh_hr // mesh_lr,
             idx=idx,
         )
         pos_lr, vel_lr, grav_pot_lr, grav_pot_grid_lr, dens_grid_lr = get_data(
@@ -133,6 +130,8 @@ def load_dataset_for_sim_idx_list(idx_list, mesh_hr, mesh_lr, data_dir):
             get_grids=True,
             idx=idx,
         )
+        particle_factor = len(pos_hr[0]) / len(pos_lr[0])
+        up_resolution_factor =  particle_factor/grid_factor
         grav_pot_grid_lr *= up_resolution_factor
         dens_grid_lr *= up_resolution_factor
         grav_pot_lr *= up_resolution_factor

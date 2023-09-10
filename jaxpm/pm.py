@@ -7,6 +7,15 @@ from jaxpm.kernels import fftk, gradient_kernel, laplace_kernel, longrange_kerne
 from jaxpm.painting import cic_paint, cic_read
 from jaxpm.growth import growth_factor, growth_rate, dGfa
 
+
+def get_delta(positions, mesh_shape,):
+    cell_volume = 1./jnp.prod(jnp.array(mesh_shape))
+    normalization = cell_volume * len(positions)
+    delta = cic_paint(jnp.zeros(mesh_shape), positions)
+    delta /= normalization
+    return delta
+
+
 def pm_forces(positions, mesh_shape=None, delta=None, r_split=0):
     """
     Computes gravitational forces on particles using a PM scheme
@@ -14,9 +23,9 @@ def pm_forces(positions, mesh_shape=None, delta=None, r_split=0):
     if mesh_shape is None:
         mesh_shape = delta.shape
     kvec = fftk(mesh_shape)
-
     if delta is None:
-        delta_k = jnp.fft.rfftn(cic_paint(jnp.zeros(mesh_shape), positions))
+        delta = get_delta(positions, mesh_shape)
+        delta_k = jnp.fft.rfftn(delta)
     else:
         delta_k = jnp.fft.rfftn(delta)
 

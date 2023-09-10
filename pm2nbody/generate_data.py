@@ -37,13 +37,11 @@ def arange_particles_in_mesh(
     n_particles,
     mesh_shape,
 ):
-    particles_per_cell = n_particles // np.prod(mesh_shape)
-    spacing = 1. / particles_per_cell 
-    cell_idxs = np.repeat(np.arange(np.prod(mesh_shape)), particles_per_cell)
-    cell_coords = np.unravel_index(cell_idxs, mesh_shape)
-    offsets = np.arange(particles_per_cell) * spacing
-    offsets = np.tile(offsets, np.prod(mesh_shape))
-    return np.stack(cell_coords, axis=-1) + offsets[:, None]
+    n_particles_per_side = jnp.ceil(n_particles**(1/3))
+    return jnp.stack(
+         jnp.meshgrid(*[jnp.arange(n_particles_per_side)*mesh_shape[s] for s in range(3)]), axis=-1
+     ).reshape([-1, 3])/n_particles_per_side
+
 
 def get_ics(
     n_particles,
@@ -107,9 +105,9 @@ def run_simulation(
 
 if __name__ == "__main__":
     out_dir = Path("/n/holystore01/LABS/itc_lab/Users/ccuestalazaro/pm2nbody/data/")
-    mesh_hr = 64
-    mesh_lr = 32
-    n_particles = 64**3
+    mesh_hr = 128
+    mesh_lr = 64
+    n_particles = mesh_hr**3
     out_dir /= f"matched_{mesh_lr}_{mesh_hr}"
     out_dir.mkdir(exist_ok=True, parents=True)
     snapshots = jnp.linspace(0.1, 1.0, 25)
