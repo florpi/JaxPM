@@ -1,4 +1,5 @@
 from pathlib import Path
+import itertools
 import yaml
 import argparse
 from functools import partial
@@ -189,22 +190,22 @@ if __name__ == "__main__":
     opt_state = optimizer.init(params)
 
     early_stop = EarlyStopping(min_delta=1e-3, patience=4)
+    best_params = None
     pbar = tqdm(range(n_steps))
     for step in pbar:
-
         def train_loss_fn(params, model_state):
             batch = next(train_data.iterator)
             return loss_fn(
-                params,
-                model_state,
-                batch,
-                scale_factors,
+                params=params,
+                model_state=model_state,
+                dataset=batch,
+                scale_factors=scale_factors,
             )
 
         (train_loss, model_state), grads = jax.value_and_grad(
             train_loss_fn, has_aux=True
         )(params, model_state)
-        updates, opt_state = optimizer.update(grads, opt_state)
+        updates, opt_state = optimizer.update(grads, opt_state, params)
 
         params = optax.apply_updates(params, updates)
         pbar.set_postfix(
@@ -213,22 +214,25 @@ if __name__ == "__main__":
                 "Loss": train_loss,
             }
         )
-
         if step % 10 == 0:
             val_loss = 0.0
             for val_batch in val_data:
-                vl, _ = loss_fn(params, model_state, val_batch)
+                vl, _ = loss_fn(params, model_state, val_batch, scale_factors)
                 val_loss += vl
             val_loss /= len(val_data)
-            _, early_stop = early_stop.update(val_loss)
+            has_improved, early_stop = early_stop.update(val_loss)
+            if has_improved:
+                best_params = params
+
             wandb.log({"train_loss": train_loss, "val_loss": val_loss}, step=step,)
 
             pbar.set_postfix(val_loss=val_loss)
+
+            should_stop, early_stop = early_stop.update(val_loss)
             if early_stop.should_stop:
-                print("Early stopping")
                 break
 
-    params = early_stop.best_params
-    with open(run_dir / f"{loss}_{train_loss:.3f}_weights.pkl", "wb") as f:
-        state_dict = hk.data_structures.to_immutable_dict(params)
+    best_loss = early_stop.best_metric
+    with open(run_dir / f"{best_loss}_{train_loss:.3f}_weights.pkl", "wb") as f:
+        state_dict = hk.data_structures.to_immutable_dict(best_params)
         pickle.dump(state_dict, f)

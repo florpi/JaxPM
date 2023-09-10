@@ -94,9 +94,10 @@ class ResolutionData:
 
 
 class PMDataset:
-    def __init__(self, high_res_data, low_res_data):
+    def __init__(self, high_res_data, low_res_data, infinite=False,):
         self.hr = high_res_data
         self.lr = low_res_data
+        self.infinite = infinite
         self.iterator = iter(self)
 
     def __len__(
@@ -110,8 +111,14 @@ class PMDataset:
         return {"hr": high_res_data, "lr": low_res_data}
 
     def __iter__(self):
-        for i in range(len(self)):
-            yield self[i]
+        if self.infinite:
+            while True:
+                for i in range(len(self)):
+                    yield self[i]
+        else:
+            for i in range(len(self)):
+                yield self[i]
+
 
 
 def load_dataset_for_sim_idx_list(idx_list, mesh_hr, mesh_lr, data_dir):
@@ -143,14 +150,14 @@ def load_dataset_for_sim_idx_list(idx_list, mesh_hr, mesh_lr, data_dir):
 
 
 def load_datasets(n_train_sims, n_val_sims, mesh_hr, mesh_lr, data_dir):
-    train_idx_list = list(range(n_train_sims))
-    val_idx_list = list(range(n_train_sims, n_train_sims + n_val_sims))
+    val_idx_list = list(range(n_val_sims))
+    train_idx_list = list(range(n_val_sims, n_val_sims + n_train_sims))
     train_low_res_data, train_high_res_data = load_dataset_for_sim_idx_list(
         train_idx_list, mesh_hr, mesh_lr, data_dir
     )
     val_low_res_data, val_high_res_data = load_dataset_for_sim_idx_list(
         val_idx_list, mesh_hr, mesh_lr, data_dir
     )
-    return PMDataset(train_high_res_data, train_low_res_data), PMDataset(
+    return PMDataset(train_high_res_data, train_low_res_data, infinite=True,), PMDataset(
         val_high_res_data, val_low_res_data
     )

@@ -105,8 +105,8 @@ def run_simulation(
 
 if __name__ == "__main__":
     out_dir = Path("/n/holystore01/LABS/itc_lab/Users/ccuestalazaro/pm2nbody/data/")
-    mesh_hr = 128
-    mesh_lr = 64
+    mesh_hr = 64 
+    mesh_lr = 32
     n_particles = mesh_hr**3
     out_dir /= f"matched_{mesh_lr}_{mesh_hr}"
     out_dir.mkdir(exist_ok=True, parents=True)
