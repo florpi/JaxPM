@@ -121,7 +121,7 @@ class PMDataset:
 
 
 
-def load_dataset_for_sim_idx_list(idx_list, mesh_hr, mesh_lr, data_dir):
+def load_dataset_for_sim_idx_list(idx_list, mesh_hr, mesh_lr, data_dir, snapshots=None,):
     grid_factor = mesh_hr / mesh_lr
     low_res_data, high_res_data = [], []
     for idx in idx_list:
@@ -130,12 +130,14 @@ def load_dataset_for_sim_idx_list(idx_list, mesh_hr, mesh_lr, data_dir):
             n_mesh=mesh_hr,
             downsampling_factor=None,#mesh_hr // mesh_lr,
             idx=idx,
+            snapshots=snapshots,
         )
         pos_lr, vel_lr, grav_pot_lr, grav_pot_grid_lr, dens_grid_lr = get_data(
             data_dir=data_dir,
             n_mesh=mesh_lr,
             get_grids=True,
             idx=idx,
+            snapshots=snapshots,
         )
         particle_factor = len(pos_hr[0]) / len(pos_lr[0])
         up_resolution_factor =  particle_factor/grid_factor
@@ -149,14 +151,14 @@ def load_dataset_for_sim_idx_list(idx_list, mesh_hr, mesh_lr, data_dir):
     return low_res_data, high_res_data
 
 
-def load_datasets(n_train_sims, n_val_sims, mesh_hr, mesh_lr, data_dir):
+def load_datasets(n_train_sims, n_val_sims, mesh_hr, mesh_lr, data_dir, snapshots=None,):
     val_idx_list = list(range(n_val_sims))
     train_idx_list = list(range(n_val_sims, n_val_sims + n_train_sims))
     train_low_res_data, train_high_res_data = load_dataset_for_sim_idx_list(
-        train_idx_list, mesh_hr, mesh_lr, data_dir
+        train_idx_list, mesh_hr, mesh_lr, data_dir, snapshots=snapshots,
     )
     val_low_res_data, val_high_res_data = load_dataset_for_sim_idx_list(
-        val_idx_list, mesh_hr, mesh_lr, data_dir
+        val_idx_list, mesh_hr, mesh_lr, data_dir, snapshots=snapshots,
     )
     return PMDataset(train_high_res_data, train_low_res_data, infinite=True,), PMDataset(
         val_high_res_data, val_low_res_data

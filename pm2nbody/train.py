@@ -94,6 +94,7 @@ if __name__ == "__main__":
     mesh_hr = config.data.mesh_hr
     n_train_sims = config.data.n_train_sims
     n_val_sims = config.data.n_val_sims
+    snapshots = jnp.array(config.data.snapshots)
     data_dir = Path(
         f"/n/holystore01/LABS/itc_lab/Users/ccuestalazaro/pm2nbody/data/matched_{mesh_lr}_{mesh_hr}/"
     )
@@ -105,12 +106,15 @@ if __name__ == "__main__":
 
     # *** GET DATA
     scale_factors = jnp.load(data_dir / f"scale_factors.npy")
+    if snapshots is not None:
+        scale_factors = scale_factors[snapshots]
     train_data, val_data = load_datasets(
         n_train_sims,
         n_val_sims,
         mesh_hr=mesh_hr,
         mesh_lr=mesh_lr,
         data_dir=data_dir,
+        snapshots=snapshots,
     )
     print(f"Using {len(train_data)} sims for training")
     print(f"Using {len(val_data)} sims for val")
@@ -189,7 +193,7 @@ if __name__ == "__main__":
 
     opt_state = optimizer.init(params)
 
-    early_stop = EarlyStopping(min_delta=1e-3, patience=4)
+    early_stop = EarlyStopping(min_delta=1e-3, patience=10)
     best_params = None
     pbar = tqdm(range(n_steps))
     for step in pbar:
@@ -214,7 +218,7 @@ if __name__ == "__main__":
                 "Loss": train_loss,
             }
         )
-        if step % 10 == 0:
+        if step % 5 == 0:
             val_loss = 0.0
             for val_batch in val_data:
                 vl, _ = loss_fn(params, model_state, val_batch, scale_factors)
@@ -233,6 +237,6 @@ if __name__ == "__main__":
                 break
 
     best_loss = early_stop.best_metric
-    with open(run_dir / f"{best_loss}_{train_loss:.3f}_weights.pkl", "wb") as f:
+    with open(run_dir / f"{best_loss:.3f}_weights.pkl", "wb") as f:
         state_dict = hk.data_structures.to_immutable_dict(best_params)
         pickle.dump(state_dict, f)
