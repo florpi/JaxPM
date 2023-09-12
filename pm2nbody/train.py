@@ -1,4 +1,6 @@
 from pathlib import Path
+from jaxpm.painting import cic_paint, cic_read
+
 import itertools
 import yaml
 import argparse
@@ -10,6 +12,7 @@ from absl import flags, logging
 from ml_collections import config_flags
 
 # from jaxpm.pm import make_hamiltonian_ode_fn
+from jaxpm.kernels import fftk, gradient_kernel, laplace_kernel, longrange_kernel, PGD_kernel
 import jax
 import optax
 import haiku as hk
@@ -24,6 +27,10 @@ import pickle
 
 config.update("jax_enable_x64", True)
 
+# 1) run with mse loss positions
+# 2) modify read model to check kcorr
+# 3) combine cnn and kcorr
+# 4) add hyperparameter search
 
 def get_frozen_potential_loss(
     neural_net,
@@ -34,22 +41,71 @@ def get_frozen_potential_loss(
         model_state,
         grid_data,
         pos_lr,
+        vel_lr,
         scale_factors,
         potential_lr,
         potential_hr,
     ):
-        corrected_potential, model_state = neural_net.apply(
-            params,
-            model_state,
-            grid_data,
-            pos_lr,
-            scale_factors,
-        )
-        predicted_potential = corrected_potential.squeeze() + potential_lr
+        if config.correction_model.type == 'kcorr':
+            kvec = fftk((grid_data.shape[:-1]))
+            pot = grid_data[...,0]
+            pot_k = jnp.fft.rfftn(pot)
+            kk = jnp.sqrt(sum((ki/jnp.pi)**2 for ki in kvec))
+            net_output, model_state = neural_net.apply(
+                params, model_state, kk, None, jnp.atleast_1d(scale_factors)
+            )
+            pot_k = pot_k *(1. + net_output)
+            predicted_potential_grid = jnp.fft.irfftn(pot_k)
+            predicted_potential = cic_read(predicted_potential_grid, pos_lr)
+        elif config.correction_model.type == 'cnn':
+            corrected_potential, model_state = neural_net.apply(
+                params,
+                model_state,
+                grid_data,
+                pos_lr,
+                scale_factors,
+            )
+            predicted_potential = corrected_potential.squeeze() + potential_lr
+        elif config.correction_model.type == 'cnn+kcorr':
+            #TODO: Add both models
+            predicted_potential += corrected_potential.squeeze()
         return jnp.mean((predicted_potential - potential_hr) ** 2), model_state
-
     return loss_fn
 
+def get_position_loss(
+    neural_net,
+    cosmology,
+    velocity_loss=False,
+):
+    @jax.jit
+    def loss_fn(
+        params,
+        model_state,
+        grid_data,
+        pos_lr,
+        vel_lr,
+        pos_hr,
+        vel_hr,
+        scale_factors,
+        potential_lr,
+        potential_hr,
+    ):
+        n_mesh = grid_data.shape[1]
+        pos_pm, vel_pm = odeint(
+            make_neural_ode_fn(neural_net, (n_mesh,n_mesh,n_mesh)),
+            [pos_lr[0], vel_lr[0]],
+            scale_factors,
+            cosmology,
+            params,
+            model_state,
+            rtol=1e-5,
+            atol=1e-5,
+        )
+        pos_pm %= n_mesh
+        sim_mse = get_mse_pos(pos_pm, pos_hr, box_size=n_mesh)
+        if velocity_loss:
+            sim_mse += jnp.sum((vel_pm - vel_hr) ** 2, axis=-1)
+        return sim_mse
 
 def get_mse_pos(
     x,
@@ -69,32 +125,70 @@ if __name__ == "__main__":
     print('Running configuration')
     print(FLAGS.config)
     config = FLAGS.config
-
-    def ConvNet(
-        x,
-        positions,
-        scale_factors,
-    ):
-        kernel_size = config.correction_model.kernel_size
-        cnn = CNN(
-            n_channels_hidden=config.correction_model.n_channels_hidden,
-            n_convolutions=config.correction_model.n_convolutions,
-            n_linear=config.correction_model.n_linear,
-            input_dim=config.correction_model.input_dim,
-            output_dim=1,
-            kernel_shape=(kernel_size, kernel_size, kernel_size),
-        )
-        return cnn(
+    if config.correction_model.type == 'cnn':
+        def CorrModel(
             x,
             positions,
             scale_factors,
-        )
+        ):
+            kernel_size = config.correction_model.kernel_size
+            cnn = CNN(
+                n_channels_hidden=config.correction_model.n_channels_hidden,
+                n_convolutions=config.correction_model.n_convolutions,
+                n_linear=config.correction_model.n_linear,
+                input_dim=config.correction_model.input_dim,
+                output_dim=1,
+                kernel_shape=(kernel_size, kernel_size, kernel_size),
+            )
+            return cnn(
+                x,
+                positions,
+                scale_factors,
+            )
+    elif config.correction_model.type == 'kcorr':
+        def CorrModel(
+            x,
+            positions,
+            scale_factors,
+        ):
+            return NeuralSplineFourierFilter(
+                    n_knots=config.correction_model.n_knots, 
+                    latent_size=config.correction_model.latent_size
+                )(x, scale_factors)
+    elif config.correction_model.type == 'cnn+kcorr':
+        def CorrModel(
+            x,
+            positions,
+            scale_factors,
+        ):
+            kernel_size = config.correction_model.kernel_size
+            cnn = CNN(
+                n_channels_hidden=config.correction_model.n_channels_hidden,
+                n_convolutions=config.correction_model.n_convolutions,
+                n_linear=config.correction_model.n_linear,
+                input_dim=config.correction_model.input_dim,
+                output_dim=1,
+                kernel_shape=(kernel_size, kernel_size, kernel_size),
+            )
+            nsf = NeuralSplineFourierFilter(
+                    n_knots=config.correction_model.n_knots, 
+                    latent_size=config.correction_model.latent_size
+                )(x, scale_factors)
+            cnn_output = cnn(
+                x,
+                positions,
+                scale_factors,
+            )
+            nsf_output = nsf(x, scale_factors)
+            return cnn_output, nsf_output
+    else:
+        raise NotImplementedError(f'Correction model type {config.correction_model.type} not implemented')
 
     mesh_lr = config.data.mesh_lr
     mesh_hr = config.data.mesh_hr
     n_train_sims = config.data.n_train_sims
     n_val_sims = config.data.n_val_sims
-    snapshots = jnp.array(config.data.snapshots)
+    snapshots = config.data.snapshots
     data_dir = Path(
         f"/n/holystore01/LABS/itc_lab/Users/ccuestalazaro/pm2nbody/data/matched_{mesh_lr}_{mesh_hr}/"
     )
@@ -107,6 +201,7 @@ if __name__ == "__main__":
     # *** GET DATA
     scale_factors = jnp.load(data_dir / f"scale_factors.npy")
     if snapshots is not None:
+        snapshots = jnp.array(snapshots)
         scale_factors = scale_factors[snapshots]
     train_data, val_data = load_datasets(
         n_train_sims,
@@ -136,7 +231,7 @@ if __name__ == "__main__":
         jnp.mean((train_data[0]["hr"].potential - train_data[0]["lr"].potential) ** 2),
     )
 
-    neural_net = hk.without_apply_rng(hk.transform_with_state(ConvNet))
+    neural_net = hk.without_apply_rng(hk.transform_with_state(CorrModel))
     rng = jax.random.PRNGKey(42)
     grid_input_init = train_data[0]["lr"].grid[0]
     pos_init = train_data[0]["lr"].positions[0] * mesh_lr
@@ -163,7 +258,7 @@ if __name__ == "__main__":
         single_loss_fn = get_frozen_potential_loss(
             neural_net=neural_net,
         )
-        vmap_loss = jax.vmap(single_loss_fn, in_axes=(None, None, 0, 0, 0, None, None))
+        vmap_loss = jax.vmap(single_loss_fn, in_axes=(None, None, 0, 0, 0, 0, 0))
 
         def loss_fn(params, model_state, dataset, scale_factors):
             loss_array, model_state = vmap_loss(
@@ -177,12 +272,11 @@ if __name__ == "__main__":
             )
             return jnp.mean(loss_array), model_state
 
-    learning_rate = 5.0e-2
     n_steps = 3_000  # 50_000
     schedule = optax.warmup_cosine_decay_schedule(
         init_value=0.0001,
         peak_value=5.0e-2,
-        warmup_steps=int(n_steps * 0.2),
+        warmup_steps=int(n_steps * 0.01),
         decay_steps=n_steps,
     )
 
