@@ -41,16 +41,17 @@ def get_data(
     get_grids: Optional[bool] = False,
     snapshots: Optional[List[int]] = None,
     box_size: Optional[float] = 256.0,
-    normalize_pos_to_box: Optional[bool] = True,
+    normalize_to_box: Optional[bool] = True,
     idx: Optional[int] = 0,
 ):
     pos = jnp.load(data_dir / f"pos_m{n_mesh}_s{idx}.npy")
     if snapshots is None:
         snapshots = jnp.arange(len(pos))
     pos = pos[snapshots, :, :]
-    if normalize_pos_to_box:
-        pos /= box_size
     vel = jnp.load(data_dir / f"vel_m{n_mesh}_s{idx}.npy")[snapshots]
+    if normalize_to_box:
+        pos /= box_size
+        vel /= box_size
     gravitational_potential = jnp.load(data_dir / f"pot_m{n_mesh}_s{idx}.npy")[
         snapshots
     ]

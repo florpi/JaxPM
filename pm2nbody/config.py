@@ -19,17 +19,18 @@ def get_config():
     data.snapshots = None
 
     config.training = training = ml_collections.ConfigDict()
-    training.loss = 'mse_potential'
+    training.loss = 'mse_positions'
     training.weight_decay = 1.e-6
+    training.initial_lr = 0.0001 #0.0001,
 
     config.correction_model = correction_model = ml_collections.ConfigDict()
-    correction_model.type = 'cnn+kcorr'
-    correction_model.n_channels_hidden = 16
+    #correction_model.type = 'cnn'
+    #correction_model.n_channels_hidden = 16
     correction_model.n_convolutions = 3
     correction_model.n_linear = 2
     correction_model.input_dim = 2
     correction_model.kernel_size = 3
-    #correction_model.type = 'kcorr'
-    #correction_model.n_knots = 16
-    #correction_model.latent_size = 32
+    correction_model.type = 'kcorr'
+    correction_model.n_knots = 16
+    correction_model.latent_size = 32
     return config

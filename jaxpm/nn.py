@@ -148,6 +148,8 @@ class CNN(hk.Module):
         positions,
         global_features=None,
     ):
+        if positions.ndim == 1:
+            positions = positions[None,...]
         x = self.learned_norm(x)  # [LR, LR, LR, input_dim]
         x = self.conv_block(x)  # [LR, LR, LR, n_channels_hidden]
         # swap axes to make the last axis the feature axis for the linear layers

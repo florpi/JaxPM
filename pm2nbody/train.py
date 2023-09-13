@@ -11,7 +11,7 @@ import sys
 from absl import flags, logging
 from ml_collections import config_flags
 
-# from jaxpm.pm import make_hamiltonian_ode_fn
+from jaxpm.pm import make_ode_fn
 from jaxpm.kernels import fftk, gradient_kernel, laplace_kernel, longrange_kernel, PGD_kernel
 import jax
 import optax
@@ -28,6 +28,8 @@ import pickle
 config.update("jax_enable_x64", True)
 
 # 1) run with mse loss positions
+#   1.2) Make sure that can train
+#   1.3) Compare to potential-loss at level potential
 # 2) modify read model to check kcorr
 # 3) combine cnn and kcorr
 # 4) add hyperparameter search
@@ -38,38 +40,32 @@ def get_frozen_potential_loss(
     @jax.jit
     def loss_fn(
         params,
-        model_state,
         grid_data,
         pos_lr,
-        vel_lr,
-        scale_factors,
         potential_lr,
         potential_hr,
+        scale_factors,
     ):
         if config.correction_model.type == 'kcorr':
             kvec = fftk((grid_data.shape[:-1]))
             pot = grid_data[...,0]
             pot_k = jnp.fft.rfftn(pot)
             kk = jnp.sqrt(sum((ki/jnp.pi)**2 for ki in kvec))
-            net_output, model_state = neural_net.apply(
-                params, model_state, kk, None, jnp.atleast_1d(scale_factors)
+            net_output = neural_net.apply(
+                params, kk, None, jnp.atleast_1d(scale_factors)
             )
             pot_k = pot_k *(1. + net_output)
             predicted_potential_grid = jnp.fft.irfftn(pot_k)
             predicted_potential = cic_read(predicted_potential_grid, pos_lr)
         elif config.correction_model.type == 'cnn':
-            corrected_potential, model_state = neural_net.apply(
+            corrected_potential = neural_net.apply(
                 params,
-                model_state,
                 grid_data,
                 pos_lr,
                 scale_factors,
             )
             predicted_potential = corrected_potential.squeeze() + potential_lr
-        elif config.correction_model.type == 'cnn+kcorr':
-            #TODO: Add both models
-            predicted_potential += corrected_potential.squeeze()
-        return jnp.mean((predicted_potential - potential_hr) ** 2), model_state
+        return jnp.mean((predicted_potential - potential_hr) ** 2)
     return loss_fn
 
 def get_position_loss(
@@ -80,32 +76,30 @@ def get_position_loss(
     @jax.jit
     def loss_fn(
         params,
-        model_state,
         grid_data,
         pos_lr,
         vel_lr,
         pos_hr,
         vel_hr,
         scale_factors,
-        potential_lr,
-        potential_hr,
     ):
         n_mesh = grid_data.shape[1]
         pos_pm, vel_pm = odeint(
-            make_neural_ode_fn(neural_net, (n_mesh,n_mesh,n_mesh)),
+            make_ode_fn(mesh_shape=(n_mesh,n_mesh,n_mesh), add_correction=config.correction_model.type, model=neural_net),
             [pos_lr[0], vel_lr[0]],
             scale_factors,
             cosmology,
             params,
-            model_state,
             rtol=1e-5,
             atol=1e-5,
         )
         pos_pm %= n_mesh
+        pos_hr %= n_mesh
         sim_mse = get_mse_pos(pos_pm, pos_hr, box_size=n_mesh)
         if velocity_loss:
             sim_mse += jnp.sum((vel_pm - vel_hr) ** 2, axis=-1)
         return sim_mse
+    return loss_fn
 
 def get_mse_pos(
     x,
@@ -148,7 +142,6 @@ if __name__ == "__main__":
     elif config.correction_model.type == 'kcorr':
         def CorrModel(
             x,
-            positions,
             scale_factors,
         ):
             return NeuralSplineFourierFilter(
@@ -221,8 +214,8 @@ if __name__ == "__main__":
     print(
         "Positions MSE = ",
         get_mse_pos(
-            train_data[0]["hr"].positions,
-            train_data[0]["lr"].positions,
+            train_data[0]["hr"].positions * mesh_lr,
+            train_data[0]["lr"].positions * mesh_lr,
             box_size=1.0,
         ),
     )
@@ -231,16 +224,25 @@ if __name__ == "__main__":
         jnp.mean((train_data[0]["hr"].potential - train_data[0]["lr"].potential) ** 2),
     )
 
-    neural_net = hk.without_apply_rng(hk.transform_with_state(CorrModel))
+    neural_net = hk.without_apply_rng(hk.transform(CorrModel))
     rng = jax.random.PRNGKey(42)
     grid_input_init = train_data[0]["lr"].grid[0]
     pos_init = train_data[0]["lr"].positions[0] * mesh_lr
-    params, model_state = neural_net.init(
-        rng,
-        grid_input_init,
-        pos_init,
-        jnp.array([1.0]),
-    )
+    scale_init = jnp.array([1.0])
+    if config.correction_model.type == 'kcorr':
+        params = neural_net.init(
+            rng,
+            grid_input_init,
+            scale_init,
+        )
+    else:
+        params = neural_net.init(
+            rng,
+            grid_input_init,
+            pos_init,
+            scale_init,
+        )
+
     run = wandb.init(
         project=config.wandb.project,
         config= config.to_dict(), 
@@ -258,23 +260,39 @@ if __name__ == "__main__":
         single_loss_fn = get_frozen_potential_loss(
             neural_net=neural_net,
         )
-        vmap_loss = jax.vmap(single_loss_fn, in_axes=(None, None, 0, 0, 0, 0, 0))
+        vmap_loss = jax.vmap(single_loss_fn, in_axes=(None, 0, 0, 0, 0,0))
 
-        def loss_fn(params, model_state, dataset, scale_factors):
-            loss_array, model_state = vmap_loss(
+        def loss_fn(params, dataset, scale_factors,):
+            loss_array = vmap_loss(
                 params,
-                model_state,
                 dataset["lr"].grid,
                 dataset["lr"].positions * mesh_lr,
-                scale_factors,
                 dataset["lr"].potential,
                 dataset["hr"].potential,
+                scale_factors,
             )
-            return jnp.mean(loss_array), model_state
+            return jnp.mean(loss_array)
 
+    elif loss == "mse_positions":
+        single_loss_fn = get_position_loss(
+            neural_net=neural_net,
+            cosmology=cosmology,
+        )
+        def loss_fn(params, dataset, scale_factors,):
+            return single_loss_fn(
+                params,
+                dataset["lr"].grid,
+                dataset["lr"].positions * mesh_lr,
+                dataset["lr"].velocities * mesh_lr,
+                dataset["hr"].positions * mesh_lr,
+                dataset["hr"].velocities * mesh_lr,
+                scale_factors,
+            )
+
+    batch = next(train_data.iterator)
     n_steps = 3_000  # 50_000
     schedule = optax.warmup_cosine_decay_schedule(
-        init_value=0.0001,
+        init_value=config.training.initial_lr, 
         peak_value=5.0e-2,
         warmup_steps=int(n_steps * 0.01),
         decay_steps=n_steps,
@@ -287,22 +305,21 @@ if __name__ == "__main__":
 
     opt_state = optimizer.init(params)
 
-    early_stop = EarlyStopping(min_delta=1e-3, patience=10)
+    early_stop = EarlyStopping(min_delta=1e-3, patience=20)
     best_params = None
     pbar = tqdm(range(n_steps))
     for step in pbar:
-        def train_loss_fn(params, model_state):
+        def train_loss_fn(params,):
             batch = next(train_data.iterator)
             return loss_fn(
                 params=params,
-                model_state=model_state,
                 dataset=batch,
                 scale_factors=scale_factors,
             )
 
-        (train_loss, model_state), grads = jax.value_and_grad(
-            train_loss_fn, has_aux=True
-        )(params, model_state)
+        train_loss, grads = jax.value_and_grad(
+            train_loss_fn, 
+        )(params,)
         updates, opt_state = optimizer.update(grads, opt_state, params)
 
         params = optax.apply_updates(params, updates)
@@ -315,8 +332,7 @@ if __name__ == "__main__":
         if step % 5 == 0:
             val_loss = 0.0
             for val_batch in val_data:
-                vl, _ = loss_fn(params, model_state, val_batch, scale_factors)
-                val_loss += vl
+                val_loss += loss_fn(params, val_batch, scale_factors,)
             val_loss /= len(val_data)
             has_improved, early_stop = early_stop.update(val_loss)
             if has_improved:
