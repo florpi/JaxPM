@@ -28,11 +28,22 @@ import pickle
 config.update("jax_enable_x64", True)
 
 # 1) run with mse loss positions
-#   1.2) Make sure that can train
-#   1.3) Compare to potential-loss at level potential
+#   1.1) Run with potential-loss but not frozen
+#   1.2) Compare to potential-loss at level potential
 # 2) modify read model to check kcorr
 # 3) combine cnn and kcorr
 # 4) add hyperparameter search
+
+def get_gravitational_potential(
+    pos,
+    n_mesh,
+):
+    mesh_shape = (n_mesh, n_mesh, n_mesh)
+    kvec = fftk(mesh_shape)
+    delta_k = jnp.fft.rfftn(cic_paint(jnp.zeros(mesh_shape), pos))
+    pot_k = -delta_k * laplace_kernel(kvec) * longrange_kernel(kvec, r_split=0)
+    pot_grid = 0.5 * jnp.fft.irfftn(pot_k)
+    return pot_grid, cic_read(pot_grid, pos)
 
 def get_frozen_potential_loss(
     neural_net,
@@ -68,6 +79,38 @@ def get_frozen_potential_loss(
         return jnp.mean((predicted_potential - potential_hr) ** 2)
     return loss_fn
 
+def get_potential_loss(
+    neural_net,
+    cosmology,
+):
+    @jax.jit
+    def loss_fn(
+        params,
+        grid_data,
+        pos_lr,
+        vel_lr,
+        potential_hr,
+        scale_factors,
+    ):
+        n_mesh = grid_data.shape[1]
+
+        pos_pm, vel_pm = odeint(
+            make_ode_fn(mesh_shape=(n_mesh,n_mesh,n_mesh), add_correction=config.correction_model.type, model=neural_net),
+            [pos_lr[0], vel_lr[0]],
+            scale_factors,
+            cosmology,
+            params,
+            rtol=1e-5,
+            atol=1e-5,
+        )
+        predicted_potential = jnp.stack(
+            [
+                get_gravitational_potential(pos_pm[i], n_mesh)[1] for i in range(len(pos_pm))
+            ]
+        )
+        return jnp.mean((predicted_potential.squeeze() - potential_hr) ** 2)
+    return loss_fn
+
 def get_position_loss(
     neural_net,
     cosmology,
@@ -84,6 +127,7 @@ def get_position_loss(
         scale_factors,
     ):
         n_mesh = grid_data.shape[1]
+
         pos_pm, vel_pm = odeint(
             make_ode_fn(mesh_shape=(n_mesh,n_mesh,n_mesh), add_correction=config.correction_model.type, model=neural_net),
             [pos_lr[0], vel_lr[0]],
@@ -95,6 +139,7 @@ def get_position_loss(
         )
         pos_pm %= n_mesh
         pos_hr %= n_mesh
+
         sim_mse = get_mse_pos(pos_pm, pos_hr, box_size=n_mesh)
         if velocity_loss:
             sim_mse += jnp.sum((vel_pm - vel_hr) ** 2, axis=-1)
@@ -211,18 +256,7 @@ if __name__ == "__main__":
     sigma8 = 0.8
     cosmology = jc.Planck15(Omega_c=omega_c, sigma8=sigma8)
     # Baseline Mean squared errors
-    print(
-        "Positions MSE = ",
-        get_mse_pos(
-            train_data[0]["hr"].positions * mesh_lr,
-            train_data[0]["lr"].positions * mesh_lr,
-            box_size=1.0,
-        ),
-    )
-    print(
-        "Potential MSE = ",
-        jnp.mean((train_data[0]["hr"].potential - train_data[0]["lr"].potential) ** 2),
-    )
+
 
     neural_net = hk.without_apply_rng(hk.transform(CorrModel))
     rng = jax.random.PRNGKey(42)
@@ -256,7 +290,7 @@ if __name__ == "__main__":
         yaml.dump(config.to_dict(), f)
 
 
-    if loss == "mse_potential":
+    if loss == "mse_frozen_potential":
         single_loss_fn = get_frozen_potential_loss(
             neural_net=neural_net,
         )
@@ -268,6 +302,22 @@ if __name__ == "__main__":
                 dataset["lr"].grid,
                 dataset["lr"].positions * mesh_lr,
                 dataset["lr"].potential,
+                dataset["hr"].potential,
+                scale_factors,
+            )
+            return jnp.mean(loss_array)
+
+    elif loss == "mse_potential":
+        single_loss_fn = get_potential_loss(
+            neural_net=neural_net,
+            cosmology=cosmology,
+        )
+        def loss_fn(params, dataset, scale_factors,):
+            loss_array = single_loss_fn(
+                params,
+                dataset["lr"].grid,
+                dataset["lr"].positions * mesh_lr,
+                dataset["lr"].velocities * mesh_lr,
                 dataset["hr"].potential,
                 scale_factors,
             )
@@ -304,7 +354,27 @@ if __name__ == "__main__":
     )
 
     opt_state = optimizer.init(params)
+    print(
+        "Potential MSE = ",
+        jnp.mean((train_data[0]["hr"].potential - train_data[0]["lr"].potential) ** 2),
+    )
+    print(
+        "Positions MSE = ",
+        get_mse_pos(
+            train_data[0]["hr"].positions * mesh_lr,
+            train_data[0]["lr"].positions * mesh_lr,
+            box_size=mesh_lr,
+        ),
+    )
 
+    val_loss = []
+    for val_batch in val_data:
+        val_loss.append(get_mse_pos(
+            val_batch["hr"].positions * mesh_lr,
+            val_batch["lr"].positions * mesh_lr,
+            box_size=mesh_lr,
+        ))
+    print('Positions val MSE = ', sum(val_loss) / len(val_loss))
     early_stop = EarlyStopping(min_delta=1e-3, patience=20)
     best_params = None
     pbar = tqdm(range(n_steps))

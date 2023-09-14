@@ -75,12 +75,13 @@ def pm_forces(
         delta_k = jnp.fft.rfftn(delta)
     kvec = fftk(mesh_shape)
     if add_correction is None:
-        return potential_kgrid_to_force_at_pos(
+        pm_forces, pm_pot = potential_kgrid_to_force_at_pos(
             delta_k=delta_k,
             kvec=kvec,
             positions=positions,
             r_split=r_split,
         )
+        return pm_forces
     elif add_correction == "cnn":
         pm_force, pm_pot = potential_kgrid_to_force_at_pos(
             delta_k=delta_k,
@@ -100,12 +101,14 @@ def pm_forces(
     elif add_correction == "kcorr":
         kk = jnp.sqrt(sum((ki / jnp.pi) ** 2 for ki in kvec))
         delta_k = delta_k * (1.0 + model.apply(params, kk, jnp.atleast_1d(a)))
-        return potential_kgrid_to_force_at_pos(
+        pm_forces, pm_pot = potential_kgrid_to_force_at_pos(
             delta_k=delta_k,
             positions=positions,
             kvec=kvec,
             r_split=r_split,
         )
+        return pm_forces
+
     else:
         raise NotImplementedError(f"add_correction={add_correction} not implemented")
 
@@ -152,7 +155,6 @@ def make_ode_fn(
         state is a tuple (position, velocities)
         """
         pos, vel = state
-
         forces = (
             1.5
             * cosmo.Omega_m
@@ -170,7 +172,6 @@ def make_ode_fn(
 
         # Computes the update of velocity (kick)
         dvel = 1.0 / (a**2 * jnp.sqrt(jc.background.Esqr(cosmo, a))) * forces
-
         return dpos, dvel
 
     return nbody_ode
