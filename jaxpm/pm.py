@@ -75,13 +75,12 @@ def pm_forces(
         delta_k = jnp.fft.rfftn(delta)
     kvec = fftk(mesh_shape)
     if add_correction is None:
-        pm_forces, pm_pot = potential_kgrid_to_force_at_pos(
+        return potential_kgrid_to_force_at_pos(
             delta_k=delta_k,
             kvec=kvec,
             positions=positions,
             r_split=r_split,
         )
-        return pm_forces
     elif add_correction == "cnn":
         pm_force, pm_pot = potential_kgrid_to_force_at_pos(
             delta_k=delta_k,
@@ -97,17 +96,16 @@ def pm_forces(
             in_axes=(0),
         )(positions)
         pm_force += corrected_potential_grad
-        return pm_force
+        return pm_forces
     elif add_correction == "kcorr":
         kk = jnp.sqrt(sum((ki / jnp.pi) ** 2 for ki in kvec))
         delta_k = delta_k * (1.0 + model.apply(params, kk, jnp.atleast_1d(a)))
-        pm_forces, pm_pot = potential_kgrid_to_force_at_pos(
+        return potential_kgrid_to_force_at_pos(
             delta_k=delta_k,
             positions=positions,
             kvec=kvec,
             r_split=r_split,
         )
-        return pm_forces
 
     else:
         raise NotImplementedError(f"add_correction={add_correction} not implemented")
