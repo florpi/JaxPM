@@ -96,7 +96,7 @@ def pm_forces(
             in_axes=(0),
         )(positions)
         pm_force += corrected_potential_grad
-        return pm_forces
+        return pm_force
     elif add_correction == "kcorr":
         kk = jnp.sqrt(sum((ki / jnp.pi) ** 2 for ki in kvec))
         delta_k = delta_k * (1.0 + model.apply(params, kk, jnp.atleast_1d(a)))

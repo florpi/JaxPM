@@ -4,7 +4,7 @@ import pickle
 import haiku as hk
 from jaxpm.nn import CNN, NeuralSplineFourierFilter
 
-def get_neural_net(config):
+def get_cnn_neural_net(config):
     def ConvNet(
         x,
         positions,
@@ -24,7 +24,19 @@ def get_neural_net(config):
             positions,
             scale_factors,
         )
-    neural_net = hk.without_apply_rng(hk.transform_with_state(ConvNet))
+    neural_net = hk.without_apply_rng(hk.transform(ConvNet))
+    return neural_net
+
+def get_kcorr_neural_net(config):
+    def FourierModel(
+        x,
+        scale_factors,
+    ):
+        return NeuralSplineFourierFilter(
+                n_knots=config['n_knots'], 
+                latent_size=config['latent_size'],
+            )(x, scale_factors)
+    neural_net = hk.without_apply_rng(hk.transform(FourierModel))
     return neural_net
 
 def read_model(
@@ -37,7 +49,12 @@ def read_model(
     # open yaml file
     with open(path_to_model / 'config.yaml') as f:
         config = yaml.load(f, Loader=yaml.FullLoader)['correction_model']
-    neural_net = get_neural_net(config)
+    if config['type'] == 'cnn':
+        neural_net = get_cnn_neural_net(config)
+    elif config['type'] == 'kcorr':
+        neural_net = get_kcorr_neural_net(config)
+    else:
+        raise ValueError(f'Unknown correction model type: {config["type"]}')
     return neural_net, params
 
     

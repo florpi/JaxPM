@@ -27,12 +27,9 @@ import pickle
 
 config.update("jax_enable_x64", True)
 
-# 1) run with mse loss positions
-#   1.1) Run with potential-loss but not frozen
-#   1.2) Compare to potential-loss at level potential
-# 2) modify read model to check kcorr
-# 3) combine cnn and kcorr
-# 4) add hyperparameter search
+# EDA model for k and cnn corr when runnning with model -> Check Pk 
+# Run a PM with only 3 steps
+# Does batch size matter? should we average?
 
 def get_gravitational_potential(
     pos,
@@ -354,27 +351,19 @@ if __name__ == "__main__":
     )
 
     opt_state = optimizer.init(params)
-    print(
-        "Potential MSE = ",
-        jnp.mean((train_data[0]["hr"].potential - train_data[0]["lr"].potential) ** 2),
-    )
-    print(
-        "Positions MSE = ",
-        get_mse_pos(
-            train_data[0]["hr"].positions * mesh_lr,
-            train_data[0]["lr"].positions * mesh_lr,
-            box_size=mesh_lr,
-        ),
-    )
 
-    val_loss = []
+    val_pos_loss, val_pot_loss = [], []
     for val_batch in val_data:
-        val_loss.append(get_mse_pos(
+        val_pos_loss.append(get_mse_pos(
             val_batch["hr"].positions * mesh_lr,
             val_batch["lr"].positions * mesh_lr,
             box_size=mesh_lr,
         ))
-    print('Positions val MSE = ', sum(val_loss) / len(val_loss))
+        val_pot_loss.append(
+            jnp.mean((val_batch['lr'].potential - val_batch['hr'].potential)**2)
+        )
+    print('Positions MSE = ', sum(val_pos_loss) / len(val_pos_loss))
+    print('Potential MSE = ', sum(val_pot_loss) / len(val_pot_loss))
     early_stop = EarlyStopping(min_delta=1e-3, patience=20)
     best_params = None
     pbar = tqdm(range(n_steps))

@@ -20,8 +20,8 @@ def get_config():
 
     config.training = training = ml_collections.ConfigDict()
     training.loss = 'mse_positions'
-    training.weight_decay = 1.e-6
-    training.initial_lr = 0.00001 #0.0001,
+    training.weight_decay = 1.e-3
+    training.initial_lr = 0.0001 #0.0001,
 
     config.correction_model = correction_model = ml_collections.ConfigDict()
     #correction_model.type = 'cnn'
