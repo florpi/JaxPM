@@ -27,6 +27,7 @@ from loss import (
 )
 
 # Try same config but with periodic padding
+# should periodic padding be done after each block?
 # add skip connections?
 # Regenerate data for next bullet point 
 # 5) Retrain frozen potential loss and compare potential predictions
