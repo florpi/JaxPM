@@ -26,8 +26,8 @@ from loss import (
     get_mse_pos,
 )
 
-# check that channels are not beeing wrapped
 # try velocity loss with pbcs (check range first)
+# velocity validation? check field level emulator too
 # add skip connections?
 # Regenerate data for next bullet point
 # k values -> how does it compare to lpt emulators?

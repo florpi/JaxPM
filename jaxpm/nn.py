@@ -98,7 +98,7 @@ class ConvBlock(hk.Module):
 
     def __call__(self, x):
         if self.pad_periodic:
-            x = jnp.pad(x, pad_with=((self.kernel_size,self.kernel_size),(self.kernel_size,self.kernel_size),(self.kernel_size,self.kernel_size),(0,0),), mode='wrap')
+            x = jnp.pad(x, pad_width=((self.kernel_size,self.kernel_size),(self.kernel_size,self.kernel_size),(self.kernel_size,self.kernel_size),(0,0),), mode='wrap')
         x = self.conv(x)
         if self.batch_norm is not None:
             x = self.batch_norm(x)
