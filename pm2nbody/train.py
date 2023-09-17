@@ -27,6 +27,7 @@ from loss import (
 )
 
 # Try same config but with periodic padding
+# add skip connections?
 # Regenerate data for next bullet point 
 # 5) Retrain frozen potential loss and compare potential predictions
 # Compare to kcorr too
@@ -248,6 +249,15 @@ def print_initial_lr_loss(
     print("Positions MSE = ", sum(val_pos_loss) / len(val_pos_loss))
     print("Potential MSE = ", sum(val_pot_loss) / len(val_pot_loss))
 
+def checkpoint(run_dir, loss, params, prefix, step=None):
+    if step is not None:
+        filename =  f"{prefix}_{loss:.3f}_weights_{step}.pkl"
+    else:
+        filename =  f"{prefix}_{loss:.3f}_weights.pkl"
+    with open(run_dir / filename, "wb") as f:
+        state_dict = hk.data_structures.to_immutable_dict(params)
+        pickle.dump(state_dict, f)
+
 
 #@partial(jax.jit, static_argnums=(0,1,3,4,7,9,10))
 def train_step(
@@ -310,7 +320,7 @@ def train_step(
         should_stop, early_stop = early_stop.update(val_loss)
     else:
         should_stop = False
-    return params, best_params, opt_state, should_stop
+    return train_loss, params, best_params, opt_state, early_stop, should_stop
 
 
 def train(
@@ -356,7 +366,7 @@ def train(
     best_params = None
     pbar = tqdm(range(config.training.n_steps))
     for step in pbar:
-        params, best_params, opt_state, should_stop = train_step(
+        train_loss, params, best_params, opt_state, early_stop, should_stop = train_step(
             train_data=train_data,
             val_data=val_data,
             scale_factors=scale_factors,
@@ -371,10 +381,16 @@ def train(
         )
         if should_stop:
             break
+        if step % config.training.checkpoint_every == 0: 
+            checkpoint(
+                run_dir=run_dir,
+                loss= train_loss, 
+                params=params,
+                prefix='train',
+                step=step,
+            )
     best_loss = early_stop.best_metric
-    with open(run_dir / f"{best_loss:.3f}_weights.pkl", "wb") as f:
-        state_dict = hk.data_structures.to_immutable_dict(best_params)
-        pickle.dump(state_dict, f)
+    checkpoint(run_dir=run_dir, params=best_params, loss=best_loss, prefix='best')
 
 
 if __name__ == "__main__":

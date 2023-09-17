@@ -50,7 +50,7 @@ def get_kcorr_neural_net(config):
 def read_model(
     path_to_model: Path,
 ):
-    pkl_file = list(path_to_model.glob("*.pkl"))[0]
+    pkl_file = list(path_to_model.glob("best*.pkl"))[0]
     with open(pkl_file, "rb") as f:
         params = pickle.load(f)
 
