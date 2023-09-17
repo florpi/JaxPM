@@ -26,10 +26,11 @@ from loss import (
     get_mse_pos,
 )
 
-# Try same config but with periodic padding
-# should periodic padding be done after each block?
+# check that channels are not beeing wrapped
+# try velocity loss with pbcs (check range first)
 # add skip connections?
-# Regenerate data for next bullet point 
+# Regenerate data for next bullet point
+# k values -> how does it compare to lpt emulators?
 # 5) Retrain frozen potential loss and compare potential predictions
 # Compare to kcorr too
 # 5) Run hopt with wandb
@@ -128,9 +129,9 @@ def build_network(config):
                 output_dim=1,
                 kernel_size=config.kernel_size,
                 pad_periodic=config.pad_periodic,
-                embed_globals = config.embed_globals,
-                n_globals_embedding = config.n_globals_embedding,
-                globals_embedding_dim = config.globals_embedding_dim,
+                embed_globals=config.embed_globals,
+                n_globals_embedding=config.n_globals_embedding,
+                globals_embedding_dim=config.globals_embedding_dim,
             )
             return cnn(
                 x,
@@ -250,17 +251,18 @@ def print_initial_lr_loss(
     print("Positions MSE = ", sum(val_pos_loss) / len(val_pos_loss))
     print("Potential MSE = ", sum(val_pot_loss) / len(val_pot_loss))
 
+
 def checkpoint(run_dir, loss, params, prefix, step=None):
     if step is not None:
-        filename =  f"{prefix}_{loss:.3f}_weights_{step}.pkl"
+        filename = f"{prefix}_{loss:.3f}_weights_{step}.pkl"
     else:
-        filename =  f"{prefix}_{loss:.3f}_weights.pkl"
+        filename = f"{prefix}_{loss:.3f}_weights.pkl"
     with open(run_dir / filename, "wb") as f:
         state_dict = hk.data_structures.to_immutable_dict(params)
         pickle.dump(state_dict, f)
 
 
-#@partial(jax.jit, static_argnums=(0,1,3,4,7,9,10))
+# @partial(jax.jit, static_argnums=(0,1,3,4,7,9,10))
 def train_step(
     train_data,
     val_data,
@@ -367,7 +369,14 @@ def train(
     best_params = None
     pbar = tqdm(range(config.training.n_steps))
     for step in pbar:
-        train_loss, params, best_params, opt_state, early_stop, should_stop = train_step(
+        (
+            train_loss,
+            params,
+            best_params,
+            opt_state,
+            early_stop,
+            should_stop,
+        ) = train_step(
             train_data=train_data,
             val_data=val_data,
             scale_factors=scale_factors,
@@ -382,16 +391,16 @@ def train(
         )
         if should_stop:
             break
-        if step % config.training.checkpoint_every == 0: 
+        if step % config.training.checkpoint_every == 0:
             checkpoint(
                 run_dir=run_dir,
-                loss= train_loss, 
+                loss=train_loss,
                 params=params,
-                prefix='train',
+                prefix="train",
                 step=step,
             )
     best_loss = early_stop.best_metric
-    checkpoint(run_dir=run_dir, params=best_params, loss=best_loss, prefix='best')
+    checkpoint(run_dir=run_dir, params=best_params, loss=best_loss, prefix="best")
 
 
 if __name__ == "__main__":

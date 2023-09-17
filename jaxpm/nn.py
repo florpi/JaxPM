@@ -76,15 +76,18 @@ class ConvBlock(hk.Module):
     def __init__(
         self,
         output_channels: int,
-        kernel_shape: Tuple[int] = (3, 3, 3),
+        kernel_size: int = 3,
         padding: str = "SAME",
         batch_norm: bool = False,
         activation=jax.nn.relu,
+        pad_periodic: bool = False,
     ):
         super().__init__()
+        self.kernel_size = kernel_size
+        self.pad_periodic = pad_periodic
         self.conv = hk.Conv3D(
             output_channels=output_channels,
-            kernel_shape=kernel_shape,
+            kernel_shape=(kernel_size, kernel_size, kernel_size,),
             padding=padding,
         )
         if batch_norm:
@@ -94,10 +97,14 @@ class ConvBlock(hk.Module):
         self.activation = activation
 
     def __call__(self, x):
+        if self.pad_periodic:
+            x = jnp.pad(x, pad_with=((self.kernel_size,self.kernel_size),(self.kernel_size,self.kernel_size),(self.kernel_size,self.kernel_size),(0,0),), mode='wrap')
         x = self.conv(x)
         if self.batch_norm is not None:
             x = self.batch_norm(x)
         x = self.activation(x)
+        if self.pad_periodic:
+            x = x[...,self.kernel_size:-self.kernel_size, self.kernel_size:-self.kernel_size, self.kernel_size:-self.kernel_size,:]
         return x
 
 class FullyConnectedBlock(hk.Module):
@@ -132,12 +139,10 @@ class CNN(hk.Module):
         self.n_convolutions = n_convolutions
         self.pad_periodic = pad_periodic
         self.embed_globals = embed_globals
-        kernel_shape = (self.kernel_size, self.kernel_size, self.kernel_size)
-        self.receptive_field = self.kernel_size * self.n_convolutions
         self.learned_norm = Rescale(input_dim)
         self.conv_block = hk.Sequential(
             [
-                ConvBlock(output_channels=channels_hidden_dim, kernel_shape=kernel_shape,)
+                ConvBlock(output_channels=channels_hidden_dim, kernel_size=kernel_size, pad_periodic=pad_periodic)
                 for _ in range(n_convolutions)
             ]
         )
@@ -180,12 +185,7 @@ class CNN(hk.Module):
         if positions.ndim == 1:
             positions = positions[None,...]
         x = self.learned_norm(x)  # [LR, LR, LR, input_dim]
-        # wrap x for periodic boundary conditions
-        if self.pad_periodic:
-            x = jnp.pad(x, pad_width=self.receptive_field,mode='wrap')
         x = self.conv_block(x)  # [LR, LR, LR, n_channels_hidden]
-        if self.pad_periodic:
-            x = x[...,self.receptive_field:-self.receptive_field, self.receptive_field:-self.receptive_field, self.receptive_field:-self.receptive_field,:]
         # swap axes to make the last axis the feature axis for the linear layers
         features_at_pos = self.read_featues_at_pos(
             x, positions

@@ -23,7 +23,7 @@ def get_config():
     training.weight_decay = 1.0e-3
     training.initial_lr = 0.0001  # 0.0001,
     training.batch_size = 2
-    training.n_steps = 100
+    training.n_steps = 200
     training.checkpoint_every = 20
     training.patience = 10
 
