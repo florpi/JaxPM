@@ -100,22 +100,44 @@ class ConvBlock(hk.Module):
         x = self.activation(x)
         return x
 
+class FullyConnectedBlock(hk.Module):
+    def __init__(
+        self,
+        hidden_dim: int, 
+        activation=jax.nn.relu,
+    ):
+        super().__init__()
+        self.fc = hk.Linear(hidden_dim)
+        self.activation = activation
+    
+    def __call__(self, x):
+        return self.activation(self.fc(x))
 
 class CNN(hk.Module):
     def __init__(
         self,
-        n_channels_hidden: int,
+        channels_hidden_dim: int,
         n_convolutions: int,
-        n_linear: int,
+        n_fully_connected: int,
+        n_globals_embedding: int = 2,
+        globals_embedding_dim: int = 8,
         input_dim: int = 2,
         output_dim: int = 1,
-        kernel_shape: Tuple[int] = (3, 3, 3),
+        kernel_size: int = 3,
+        pad_periodic: bool = True,
+        embed_globals: bool = True, 
     ):
         super().__init__(name="CNN")
+        self.kernel_size = kernel_size
+        self.n_convolutions = n_convolutions
+        self.pad_periodic = pad_periodic
+        self.embed_globals = embed_globals
+        kernel_shape = (self.kernel_size, self.kernel_size, self.kernel_size)
+        self.receptive_field = self.kernel_size * self.n_convolutions
         self.learned_norm = Rescale(input_dim)
         self.conv_block = hk.Sequential(
             [
-                ConvBlock(output_channels=n_channels_hidden, kernel_shape=kernel_shape)
+                ConvBlock(output_channels=channels_hidden_dim, kernel_shape=kernel_shape,)
                 for _ in range(n_convolutions)
             ]
         )
@@ -123,16 +145,23 @@ class CNN(hk.Module):
             cic_read,
             in_axes=(-1, None),
         )
-        linear_layers = [hk.Linear(n_channels_hidden) for _ in range(n_linear)] + [
+        fcn_layers = [FullyConnectedBlock(channels_hidden_dim) for _ in range(n_fully_connected)] + [
             hk.Linear(output_dim)
         ]
         self.fcn_block = hk.Sequential(
-            linear_layers,
+            fcn_layers,
         )
+        if self.embed_globals:
+            self.globals_fcn = hk.Sequential(
+                [FullyConnectedBlock(globals_embedding_dim) for _ in range(n_globals_embedding)] 
+            )
+
 
     def concatenate_globals(self, features_at_pos, global_features):
         if global_features.ndim < 2:
             global_features = jnp.expand_dims(global_features, axis=-1)
+        if self.embed_globals:
+            global_features = self.globals_fcn(global_features)
         broadcast_globals = jnp.broadcast_to(
             global_features,
             (
@@ -151,7 +180,12 @@ class CNN(hk.Module):
         if positions.ndim == 1:
             positions = positions[None,...]
         x = self.learned_norm(x)  # [LR, LR, LR, input_dim]
+        # wrap x for periodic boundary conditions
+        if self.pad_periodic:
+            x = jnp.pad(x, pad_width=self.receptive_field,mode='wrap')
         x = self.conv_block(x)  # [LR, LR, LR, n_channels_hidden]
+        if self.pad_periodic:
+            x = x[...,self.receptive_field:-self.receptive_field, self.receptive_field:-self.receptive_field, self.receptive_field:-self.receptive_field,:]
         # swap axes to make the last axis the feature axis for the linear layers
         features_at_pos = self.read_featues_at_pos(
             x, positions

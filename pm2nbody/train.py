@@ -1,266 +1,166 @@
 from pathlib import Path
-from jaxpm.painting import cic_paint, cic_read
 
-import itertools
 import yaml
-import argparse
 from functools import partial
 import jax.numpy as jnp
 from jaxpm.nn import CNN, NeuralSplineFourierFilter
 import sys
-from absl import flags, logging
+from absl import flags
 from ml_collections import config_flags
 
-from jaxpm.pm import make_ode_fn
-from jaxpm.kernels import fftk, gradient_kernel, laplace_kernel, longrange_kernel, PGD_kernel
 import jax
 import optax
 import haiku as hk
 from tqdm import tqdm
 from jax import config
 import jax_cosmo as jc
-from jax.experimental.ode import odeint
 from read_data import load_datasets
 from flax.training.early_stopping import EarlyStopping
 import wandb
 import pickle
 
+from loss import (
+    get_frozen_potential_loss,
+    get_potential_loss,
+    get_position_loss,
+    get_mse_pos,
+)
+
+# Try same config but with periodic padding
+# Regenerate data for next bullet point 
+# 5) Retrain frozen potential loss and compare potential predictions
+# Compare to kcorr too
+# 5) Run hopt with wandb
+# 6) Add velocity loss, degeneracy with periodic boundaries?
+# 7) Add flag for time diffusion embedding
+
 config.update("jax_enable_x64", True)
 
-# EDA model for k and cnn corr when runnning with model -> Check Pk 
-# Run a PM with only 3 steps
-# Does batch size matter? should we average?
 
-def get_gravitational_potential(
-    pos,
-    n_mesh,
-):
-    mesh_shape = (n_mesh, n_mesh, n_mesh)
-    kvec = fftk(mesh_shape)
-    delta_k = jnp.fft.rfftn(cic_paint(jnp.zeros(mesh_shape), pos))
-    pot_k = -delta_k * laplace_kernel(kvec) * longrange_kernel(kvec, r_split=0)
-    pot_grid = 0.5 * jnp.fft.irfftn(pot_k)
-    return pot_grid, cic_read(pot_grid, pos)
-
-def get_frozen_potential_loss(
+def build_loss_fn(
+    loss,
     neural_net,
+    cosmology,
+    correction_type,
 ):
-    @jax.jit
-    def loss_fn(
-        params,
-        grid_data,
-        pos_lr,
-        potential_lr,
-        potential_hr,
-        scale_factors,
-    ):
-        if config.correction_model.type == 'kcorr':
-            kvec = fftk((grid_data.shape[:-1]))
-            pot = grid_data[...,0]
-            pot_k = jnp.fft.rfftn(pot)
-            kk = jnp.sqrt(sum((ki/jnp.pi)**2 for ki in kvec))
-            net_output = neural_net.apply(
-                params, kk, None, jnp.atleast_1d(scale_factors)
-            )
-            pot_k = pot_k *(1. + net_output)
-            predicted_potential_grid = jnp.fft.irfftn(pot_k)
-            predicted_potential = cic_read(predicted_potential_grid, pos_lr)
-        elif config.correction_model.type == 'cnn':
-            corrected_potential = neural_net.apply(
+    if loss == "mse_frozen_potential":
+        single_loss_fn = get_frozen_potential_loss(
+            neural_net=neural_net,
+        )
+        vmap_loss = jax.vmap(single_loss_fn, in_axes=(None, 0, 0, 0, 0, 0))
+
+        def loss_fn(
+            params,
+            dataset,
+            scale_factors,
+        ):
+            loss_array = vmap_loss(
                 params,
-                grid_data,
-                pos_lr,
+                dataset["lr"].grid,
+                dataset["lr"].positions * dataset["lr"].mesh,
+                dataset["lr"].potential,
+                dataset["hr"].potential,
                 scale_factors,
             )
-            predicted_potential = corrected_potential.squeeze() + potential_lr
-        return jnp.mean((predicted_potential - potential_hr) ** 2)
-    return loss_fn
+            return jnp.mean(loss_array)
 
-def get_potential_loss(
-    neural_net,
-    cosmology,
-):
-    @jax.jit
-    def loss_fn(
-        params,
-        grid_data,
-        pos_lr,
-        vel_lr,
-        potential_hr,
-        scale_factors,
-    ):
-        n_mesh = grid_data.shape[1]
+    elif loss == "mse_potential":
+        single_loss_fn = get_potential_loss(
+            neural_net=neural_net,
+            cosmology=cosmology,
+        )
 
-        pos_pm, vel_pm = odeint(
-            make_ode_fn(mesh_shape=(n_mesh,n_mesh,n_mesh), add_correction=config.correction_model.type, model=neural_net),
-            [pos_lr[0], vel_lr[0]],
-            scale_factors,
-            cosmology,
+        def loss_fn(
             params,
-            rtol=1e-5,
-            atol=1e-5,
-        )
-        predicted_potential = jnp.stack(
-            [
-                get_gravitational_potential(pos_pm[i], n_mesh)[1] for i in range(len(pos_pm))
-            ]
-        )
-        return jnp.mean((predicted_potential.squeeze() - potential_hr) ** 2)
-    return loss_fn
-
-def get_position_loss(
-    neural_net,
-    cosmology,
-    velocity_loss=False,
-):
-    @jax.jit
-    def loss_fn(
-        params,
-        grid_data,
-        pos_lr,
-        vel_lr,
-        pos_hr,
-        vel_hr,
-        scale_factors,
-    ):
-        n_mesh = grid_data.shape[1]
-
-        pos_pm, vel_pm = odeint(
-            make_ode_fn(mesh_shape=(n_mesh,n_mesh,n_mesh), add_correction=config.correction_model.type, model=neural_net),
-            [pos_lr[0], vel_lr[0]],
+            dataset,
             scale_factors,
-            cosmology,
-            params,
-            rtol=1e-5,
-            atol=1e-5,
-        )
-        pos_pm %= n_mesh
-        pos_hr %= n_mesh
+        ):
+            loss_array = single_loss_fn(
+                params,
+                dataset["lr"].grid,
+                dataset["lr"].positions * dataset["lr"].mesh,
+                dataset["lr"].velocities * dataset["lr"].mesh,
+                dataset["hr"].potential,
+                scale_factors,
+            )
+            return jnp.mean(loss_array)
 
-        sim_mse = get_mse_pos(pos_pm, pos_hr, box_size=n_mesh)
-        if velocity_loss:
-            sim_mse += jnp.sum((vel_pm - vel_hr) ** 2, axis=-1)
-        return sim_mse
+    elif loss == "mse_positions":
+        single_loss_fn = get_position_loss(
+            neural_net=neural_net,
+            cosmology=cosmology,
+            correction_type=correction_type,
+        )
+
+        def loss_fn(
+            params,
+            dataset,
+            scale_factors,
+        ):
+            return single_loss_fn(
+                params,
+                dataset["lr"].grid,
+                dataset["lr"].positions * dataset["lr"].mesh,
+                dataset["lr"].velocities * dataset["lr"].mesh,
+                dataset["hr"].positions * dataset["lr"].mesh,
+                dataset["hr"].velocities * dataset["lr"].mesh,
+                scale_factors,
+            )
+
     return loss_fn
 
-def get_mse_pos(
-    x,
-    y,
-    box_size=1.0,
-):
-    dx = x - y
-    if box_size is not None:
-        dx = dx - box_size * jnp.round(dx / box_size)
-    return jnp.mean(jnp.sum(dx**2, axis=-1))
 
+def build_network(config):
+    if config.type == "cnn":
 
-if __name__ == "__main__":
-    FLAGS = flags.FLAGS
-    config_flags.DEFINE_config_file("config", "config.py", "Training configuration")
-    FLAGS(sys.argv)
-    print('Running configuration')
-    print(FLAGS.config)
-    config = FLAGS.config
-    if config.correction_model.type == 'cnn':
         def CorrModel(
             x,
             positions,
             scale_factors,
         ):
-            kernel_size = config.correction_model.kernel_size
             cnn = CNN(
-                n_channels_hidden=config.correction_model.n_channels_hidden,
-                n_convolutions=config.correction_model.n_convolutions,
-                n_linear=config.correction_model.n_linear,
-                input_dim=config.correction_model.input_dim,
+                channels_hidden_dim=config.channels_hidden_dim,
+                n_convolutions=config.n_convolutions,
+                n_fully_connected=config.n_fully_connected,
+                input_dim=config.input_dim,
                 output_dim=1,
-                kernel_shape=(kernel_size, kernel_size, kernel_size),
+                kernel_size=config.kernel_size,
+                pad_periodic=config.pad_periodic,
+                embed_globals = config.embed_globals,
+                n_globals_embedding = config.n_globals_embedding,
+                globals_embedding_dim = config.globals_embedding_dim,
             )
             return cnn(
                 x,
                 positions,
                 scale_factors,
             )
-    elif config.correction_model.type == 'kcorr':
+
+    elif config.type == "kcorr":
+
         def CorrModel(
             x,
             scale_factors,
         ):
             return NeuralSplineFourierFilter(
-                    n_knots=config.correction_model.n_knots, 
-                    latent_size=config.correction_model.latent_size
-                )(x, scale_factors)
-    elif config.correction_model.type == 'cnn+kcorr':
-        def CorrModel(
-            x,
-            positions,
-            scale_factors,
-        ):
-            kernel_size = config.correction_model.kernel_size
-            cnn = CNN(
-                n_channels_hidden=config.correction_model.n_channels_hidden,
-                n_convolutions=config.correction_model.n_convolutions,
-                n_linear=config.correction_model.n_linear,
-                input_dim=config.correction_model.input_dim,
-                output_dim=1,
-                kernel_shape=(kernel_size, kernel_size, kernel_size),
-            )
-            nsf = NeuralSplineFourierFilter(
-                    n_knots=config.correction_model.n_knots, 
-                    latent_size=config.correction_model.latent_size
-                )(x, scale_factors)
-            cnn_output = cnn(
-                x,
-                positions,
-                scale_factors,
-            )
-            nsf_output = nsf(x, scale_factors)
-            return cnn_output, nsf_output
+                n_knots=config.n_knots, latent_size=config.latent_size
+            )(x, scale_factors)
+
     else:
-        raise NotImplementedError(f'Correction model type {config.correction_model.type} not implemented')
-
-    mesh_lr = config.data.mesh_lr
-    mesh_hr = config.data.mesh_hr
-    n_train_sims = config.data.n_train_sims
-    n_val_sims = config.data.n_val_sims
-    snapshots = config.data.snapshots
-    data_dir = Path(
-        f"/n/holystore01/LABS/itc_lab/Users/ccuestalazaro/pm2nbody/data/matched_{mesh_lr}_{mesh_hr}/"
-    )
-    output_dir = Path(
-        "/n/holystore01/LABS/itc_lab/Users/ccuestalazaro/pm2nbody/models/"
-    )
-    box_size = 256.0
-    loss = config.training.loss
-
-    # *** GET DATA
-    scale_factors = jnp.load(data_dir / f"scale_factors.npy")
-    if snapshots is not None:
-        snapshots = jnp.array(snapshots)
-        scale_factors = scale_factors[snapshots]
-    train_data, val_data = load_datasets(
-        n_train_sims,
-        n_val_sims,
-        mesh_hr=mesh_hr,
-        mesh_lr=mesh_lr,
-        data_dir=data_dir,
-        snapshots=snapshots,
-    )
-    print(f"Using {len(train_data)} sims for training")
-    print(f"Using {len(val_data)} sims for val")
-
-    omega_c = 0.25
-    sigma8 = 0.8
-    cosmology = jc.Planck15(Omega_c=omega_c, sigma8=sigma8)
-    # Baseline Mean squared errors
+        raise NotImplementedError(
+            f"Correction model type {config.type} not implemented"
+        )
+    return hk.without_apply_rng(hk.transform(CorrModel))
 
 
-    neural_net = hk.without_apply_rng(hk.transform(CorrModel))
-    rng = jax.random.PRNGKey(42)
-    grid_input_init = train_data[0]["lr"].grid[0]
-    pos_init = train_data[0]["lr"].positions[0] * mesh_lr
+def initialize_network(
+    data_sample, neural_net, seed: int = 42, model_type: str = "cnn"
+):
+    rng = jax.random.PRNGKey(seed)
+    grid_input_init = data_sample["lr"].grid[0]
+    pos_init = data_sample["lr"].positions[0]
     scale_init = jnp.array([1.0])
-    if config.correction_model.type == 'kcorr':
+    if model_type == "kcorr":
         params = neural_net.init(
             rng,
             grid_input_init,
@@ -273,139 +173,215 @@ if __name__ == "__main__":
             pos_init,
             scale_init,
         )
+    return params
+
+
+def build_dataloader(
+    config,
+    data_dir=Path(f"/n/holystore01/LABS/itc_lab/Users/ccuestalazaro/pm2nbody/data/"),
+):
+    omega_c = 0.25
+    sigma8 = 0.8
+    cosmology = jc.Planck15(Omega_c=omega_c, sigma8=sigma8)
+    mesh_lr = config.mesh_lr
+    mesh_hr = config.mesh_hr
+    n_train_sims = config.n_train_sims
+    n_val_sims = config.n_val_sims
+    snapshots = config.snapshots
+    data_dir /= f"matched_{mesh_lr}_{mesh_hr}/"
+    scale_factors = jnp.load(data_dir / f"scale_factors.npy")
+    if snapshots is not None:
+        snapshots = jnp.array(snapshots)
+        scale_factors = scale_factors[snapshots]
+    train_data, val_data = load_datasets(
+        n_train_sims,
+        n_val_sims,
+        mesh_hr=mesh_hr,
+        mesh_lr=mesh_lr,
+        data_dir=data_dir,
+        snapshots=snapshots,
+    )
+    return cosmology, scale_factors, train_data, val_data
+
+
+def build_optimizer(
+    config,
+    params,
+):
+    schedule = optax.warmup_cosine_decay_schedule(
+        init_value=config.initial_lr,
+        peak_value=5.0e-2,
+        warmup_steps=int(config.n_steps * 0.8),
+        decay_steps=config.n_steps,
+    )
+
+    optimizer = optax.MultiSteps(
+        optax.chain(
+            optax.clip(1.0),
+            optax.adamw(
+                learning_rate=schedule,
+                weight_decay=config.weight_decay,
+            ),
+        ),
+        every_k_schedule=config.batch_size,
+        use_grad_mean=True,
+    )
+    opt_state = optimizer.init(params)
+    return optimizer, opt_state
+
+
+def print_initial_lr_loss(
+    val_data,
+):
+    val_pos_loss, val_pot_loss = [], []
+    for val_batch in val_data:
+        val_pos_loss.append(
+            get_mse_pos(
+                val_batch["hr"].positions * val_batch["lr"].mesh,
+                val_batch["lr"].positions * val_batch["lr"].mesh,
+                box_size=val_batch["lr"].mesh,
+            )
+        )
+        val_pot_loss.append(
+            jnp.mean((val_batch["lr"].potential - val_batch["hr"].potential) ** 2)
+        )
+    print("Positions MSE = ", sum(val_pos_loss) / len(val_pos_loss))
+    print("Potential MSE = ", sum(val_pot_loss) / len(val_pot_loss))
+
+
+#@partial(jax.jit, static_argnums=(0,1,3,4,7,9,10))
+def train_step(
+    train_data,
+    val_data,
+    scale_factors,
+    loss_fn,
+    optimizer,
+    opt_state,
+    params,
+    best_params,
+    step,
+    pbar,
+    early_stop,
+):
+    def train_loss_fn(
+        params,
+    ):
+        batch = next(train_data.iterator)
+        return loss_fn(
+            params=params,
+            dataset=batch,
+            scale_factors=scale_factors,
+        )
+
+    train_loss, grads = jax.value_and_grad(
+        train_loss_fn,
+    )(
+        params,
+    )
+    updates, opt_state = optimizer.update(grads, opt_state, params)
+
+    params = optax.apply_updates(params, updates)
+    pbar.set_postfix(
+        {
+            "Step": step,
+            "Loss": train_loss,
+        }
+    )
+    if step % config.training.batch_size == 0:
+        val_loss = 0.0
+        for val_batch in val_data:
+            val_loss += loss_fn(
+                params,
+                val_batch,
+                scale_factors,
+            )
+        val_loss /= len(val_data)
+        has_improved, early_stop = early_stop.update(val_loss)
+        if has_improved:
+            best_params = params
+
+        wandb.log(
+            {"train_loss": train_loss, "val_loss": val_loss},
+            step=step,
+        )
+
+        pbar.set_postfix(val_loss=val_loss)
+
+        should_stop, early_stop = early_stop.update(val_loss)
+    else:
+        should_stop = False
+    return params, best_params, opt_state, should_stop
+
+
+def train(
+    config=None,
+    data_dir=Path(f"/n/holystore01/LABS/itc_lab/Users/ccuestalazaro/pm2nbody/data/"),
+    output_dir=Path("/n/holystore01/LABS/itc_lab/Users/ccuestalazaro/pm2nbody/models/"),
+):
+    neural_net = build_network(config.correction_model)
+    cosmology, scale_factors, train_data, val_data = build_dataloader(
+        config.data,
+        data_dir=data_dir,
+    )
+    print(f"Using {len(train_data)} sims for training")
+    print(f"Using {len(val_data)} sims for val")
+    params = initialize_network(
+        train_data[0], neural_net=neural_net, model_type=config.correction_model.type
+    )
 
     run = wandb.init(
         project=config.wandb.project,
-        config= config.to_dict(), 
-        dir = output_dir,
+        config=config.to_dict(),
+        dir=output_dir,
     )
-    print(f'Run name: {run.name}')
-    run_dir = output_dir / f'{run.name}'
+    print(f"Run name: {run.name}")
+    run_dir = output_dir / f"{run.name}"
     run_dir.mkdir(exist_ok=True, parents=True)
-
-    with open(run_dir / 'config.yaml', 'w') as f:
+    with open(run_dir / "config.yaml", "w") as f:
         yaml.dump(config.to_dict(), f)
 
-
-    if loss == "mse_frozen_potential":
-        single_loss_fn = get_frozen_potential_loss(
-            neural_net=neural_net,
-        )
-        vmap_loss = jax.vmap(single_loss_fn, in_axes=(None, 0, 0, 0, 0,0))
-
-        def loss_fn(params, dataset, scale_factors,):
-            loss_array = vmap_loss(
-                params,
-                dataset["lr"].grid,
-                dataset["lr"].positions * mesh_lr,
-                dataset["lr"].potential,
-                dataset["hr"].potential,
-                scale_factors,
-            )
-            return jnp.mean(loss_array)
-
-    elif loss == "mse_potential":
-        single_loss_fn = get_potential_loss(
-            neural_net=neural_net,
-            cosmology=cosmology,
-        )
-        def loss_fn(params, dataset, scale_factors,):
-            loss_array = single_loss_fn(
-                params,
-                dataset["lr"].grid,
-                dataset["lr"].positions * mesh_lr,
-                dataset["lr"].velocities * mesh_lr,
-                dataset["hr"].potential,
-                scale_factors,
-            )
-            return jnp.mean(loss_array)
-
-    elif loss == "mse_positions":
-        single_loss_fn = get_position_loss(
-            neural_net=neural_net,
-            cosmology=cosmology,
-        )
-        def loss_fn(params, dataset, scale_factors,):
-            return single_loss_fn(
-                params,
-                dataset["lr"].grid,
-                dataset["lr"].positions * mesh_lr,
-                dataset["lr"].velocities * mesh_lr,
-                dataset["hr"].positions * mesh_lr,
-                dataset["hr"].velocities * mesh_lr,
-                scale_factors,
-            )
-
-    batch = next(train_data.iterator)
-    n_steps = 3_000  # 50_000
-    schedule = optax.warmup_cosine_decay_schedule(
-        init_value=config.training.initial_lr, 
-        peak_value=5.0e-2,
-        warmup_steps=int(n_steps * 0.01),
-        decay_steps=n_steps,
+    loss_fn = build_loss_fn(
+        config.training.loss,
+        neural_net,
+        cosmology,
+        correction_type=config.correction_model.type,
+    )
+    optimizer, opt_state = build_optimizer(
+        config.training,
+        params=params,
     )
 
-    optimizer = optax.adamw(
-        learning_rate=schedule,
-        weight_decay=config.training.weight_decay,
-    )
-
-    opt_state = optimizer.init(params)
-
-    val_pos_loss, val_pot_loss = [], []
-    for val_batch in val_data:
-        val_pos_loss.append(get_mse_pos(
-            val_batch["hr"].positions * mesh_lr,
-            val_batch["lr"].positions * mesh_lr,
-            box_size=mesh_lr,
-        ))
-        val_pot_loss.append(
-            jnp.mean((val_batch['lr'].potential - val_batch['hr'].potential)**2)
-        )
-    print('Positions MSE = ', sum(val_pos_loss) / len(val_pos_loss))
-    print('Potential MSE = ', sum(val_pot_loss) / len(val_pot_loss))
-    early_stop = EarlyStopping(min_delta=1e-3, patience=20)
+    print_initial_lr_loss(val_data)
+    early_stop = EarlyStopping(patience=config.training.patience)
     best_params = None
-    pbar = tqdm(range(n_steps))
+    pbar = tqdm(range(config.training.n_steps))
     for step in pbar:
-        def train_loss_fn(params,):
-            batch = next(train_data.iterator)
-            return loss_fn(
-                params=params,
-                dataset=batch,
-                scale_factors=scale_factors,
-            )
-
-        train_loss, grads = jax.value_and_grad(
-            train_loss_fn, 
-        )(params,)
-        updates, opt_state = optimizer.update(grads, opt_state, params)
-
-        params = optax.apply_updates(params, updates)
-        pbar.set_postfix(
-            {
-                "Step": step,
-                "Loss": train_loss,
-            }
+        params, best_params, opt_state, should_stop = train_step(
+            train_data=train_data,
+            val_data=val_data,
+            scale_factors=scale_factors,
+            loss_fn=loss_fn,
+            optimizer=optimizer,
+            opt_state=opt_state,
+            params=params,
+            best_params=best_params,
+            early_stop=early_stop,
+            step=step,
+            pbar=pbar,
         )
-        if step % 5 == 0:
-            val_loss = 0.0
-            for val_batch in val_data:
-                val_loss += loss_fn(params, val_batch, scale_factors,)
-            val_loss /= len(val_data)
-            has_improved, early_stop = early_stop.update(val_loss)
-            if has_improved:
-                best_params = params
-
-            wandb.log({"train_loss": train_loss, "val_loss": val_loss}, step=step,)
-
-            pbar.set_postfix(val_loss=val_loss)
-
-            should_stop, early_stop = early_stop.update(val_loss)
-            if early_stop.should_stop:
-                break
-
+        if should_stop:
+            break
     best_loss = early_stop.best_metric
     with open(run_dir / f"{best_loss:.3f}_weights.pkl", "wb") as f:
         state_dict = hk.data_structures.to_immutable_dict(best_params)
         pickle.dump(state_dict, f)
+
+
+if __name__ == "__main__":
+    FLAGS = flags.FLAGS
+    config_flags.DEFINE_config_file("config", "config.py", "Training configuration")
+    FLAGS(sys.argv)
+    print("Running configuration")
+    print(FLAGS.config)
+    config = FLAGS.config
+    train(config)

@@ -74,12 +74,13 @@ def get_data(
     if not get_grids:
         return pos, vel, gravitational_potential
     potential_grid = jnp.load(data_dir / f"pot_grid_m{n_mesh}_s{idx}.npy")[snapshots]
-    density_grid = jnp.load(data_dir / f"pot_grid_m{n_mesh}_s{idx}.npy")[snapshots]
+    density_grid = jnp.load(data_dir / f"dens_grid_m{n_mesh}_s{idx}.npy")[snapshots]
     return pos, vel, gravitational_potential, potential_grid, density_grid
 
 
 @dataclass
 class ResolutionData:
+    mesh: int
     positions: jnp.array
     velocities: jnp.array
     potential: jnp.array
@@ -95,7 +96,12 @@ class ResolutionData:
 
 
 class PMDataset:
-    def __init__(self, high_res_data, low_res_data, infinite=False,):
+    def __init__(
+        self,
+        high_res_data,
+        low_res_data,
+        infinite=False,
+    ):
         self.hr = high_res_data
         self.lr = low_res_data
         self.infinite = infinite
@@ -121,15 +127,20 @@ class PMDataset:
                 yield self[i]
 
 
-
-def load_dataset_for_sim_idx_list(idx_list, mesh_hr, mesh_lr, data_dir, snapshots=None,):
+def load_dataset_for_sim_idx_list(
+    idx_list,
+    mesh_hr,
+    mesh_lr,
+    data_dir,
+    snapshots=None,
+):
     grid_factor = mesh_hr / mesh_lr
     low_res_data, high_res_data = [], []
     for idx in idx_list:
         pos_hr, vel_hr, grav_pot_hr = get_data(
             data_dir=data_dir,
             n_mesh=mesh_hr,
-            downsampling_factor=None,#mesh_hr // mesh_lr,
+            downsampling_factor=None,  # mesh_hr // mesh_lr,
             idx=idx,
             snapshots=snapshots,
         )
@@ -141,26 +152,47 @@ def load_dataset_for_sim_idx_list(idx_list, mesh_hr, mesh_lr, data_dir, snapshot
             snapshots=snapshots,
         )
         particle_factor = len(pos_hr[0]) / len(pos_lr[0])
-        up_resolution_factor =  particle_factor/grid_factor
+        up_resolution_factor = particle_factor / grid_factor
         grav_pot_grid_lr *= up_resolution_factor
         dens_grid_lr *= up_resolution_factor
         grav_pot_lr *= up_resolution_factor
-        high_res_data.append(ResolutionData(pos_hr, vel_hr, grav_pot_hr, None, None))
+        high_res_data.append(
+            ResolutionData(mesh_hr, pos_hr, vel_hr, grav_pot_hr, None, None)
+        )
         low_res_data.append(
-            ResolutionData(pos_lr, vel_lr, grav_pot_lr, grav_pot_grid_lr, dens_grid_lr)
+            ResolutionData(
+                mesh_lr, pos_lr, vel_lr, grav_pot_lr, grav_pot_grid_lr, dens_grid_lr
+            )
         )
     return low_res_data, high_res_data
 
 
-def load_datasets(n_train_sims, n_val_sims, mesh_hr, mesh_lr, data_dir, snapshots=None,):
+def load_datasets(
+    n_train_sims,
+    n_val_sims,
+    mesh_hr,
+    mesh_lr,
+    data_dir,
+    snapshots=None,
+):
     val_idx_list = list(range(n_val_sims))
     train_idx_list = list(range(n_val_sims, n_val_sims + n_train_sims))
     train_low_res_data, train_high_res_data = load_dataset_for_sim_idx_list(
-        train_idx_list, mesh_hr, mesh_lr, data_dir, snapshots=snapshots,
+        train_idx_list,
+        mesh_hr,
+        mesh_lr,
+        data_dir,
+        snapshots=snapshots,
     )
     val_low_res_data, val_high_res_data = load_dataset_for_sim_idx_list(
-        val_idx_list, mesh_hr, mesh_lr, data_dir, snapshots=snapshots,
+        val_idx_list,
+        mesh_hr,
+        mesh_lr,
+        data_dir,
+        snapshots=snapshots,
     )
-    return PMDataset(train_high_res_data, train_low_res_data, infinite=True,), PMDataset(
-        val_high_res_data, val_low_res_data
-    )
+    return PMDataset(
+        train_high_res_data,
+        train_low_res_data,
+        infinite=True,
+    ), PMDataset(val_high_res_data, val_low_res_data)

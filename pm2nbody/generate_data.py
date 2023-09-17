@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 import jax_cosmo as jc
 from jax.experimental.ode import odeint
-from jaxpm.pm import linear_field, lpt, make_ode_fn
+from jaxpm.pm import linear_field, lpt, make_ode_fn, get_delta
 from jaxpm.kernels import fftk, longrange_kernel, laplace_kernel
 from jaxpm.painting import cic_paint, cic_read
 from functools import partial
@@ -33,14 +33,21 @@ def downsample_field(
     result = result[::downsampling_factor, ::downsampling_factor, ::downsampling_factor]
     return result
 
+
 def arange_particles_in_mesh(
     n_particles,
     mesh_shape,
 ):
-    n_particles_per_side = jnp.ceil(n_particles**(1/3))
-    return jnp.stack(
-         jnp.meshgrid(*[jnp.arange(n_particles_per_side)*mesh_shape[s] for s in range(3)]), axis=-1
-     ).reshape([-1, 3])/n_particles_per_side
+    n_particles_per_side = jnp.ceil(n_particles ** (1 / 3))
+    return (
+        jnp.stack(
+            jnp.meshgrid(
+                *[jnp.arange(n_particles_per_side) * mesh_shape[s] for s in range(3)]
+            ),
+            axis=-1,
+        ).reshape([-1, 3])
+        / n_particles_per_side
+    )
 
 
 def get_ics(
@@ -78,10 +85,8 @@ def get_density(
     pos,
     n_mesh,
 ):
-    grid_dens = cic_paint(jnp.zeros([n_mesh, n_mesh, n_mesh]), pos)
+    grid_dens = get_delta(pos, (n_mesh, n_mesh, n_mesh))
     dens = cic_read(grid_dens, pos)
-    dens = dens / dens.mean() - 1
-    grid_dens = grid_dens / grid_dens.mean() - 1
     return grid_dens, dens
 
 
@@ -105,7 +110,7 @@ def run_simulation(
 
 if __name__ == "__main__":
     out_dir = Path("/n/holystore01/LABS/itc_lab/Users/ccuestalazaro/pm2nbody/data/")
-    mesh_hr = 64 
+    mesh_hr = 64
     mesh_lr = 32
     n_particles = mesh_hr**3
     out_dir /= f"matched_{mesh_lr}_{mesh_hr}"
