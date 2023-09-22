@@ -9,6 +9,7 @@ from jaxpm.kernels import (
     PGD_kernel,
 )
 from jax.experimental.ode import odeint
+import jax_cosmo.background as bkgrd 
 from jaxpm.pm import make_ode_fn
 
 
@@ -102,20 +103,20 @@ def get_potential_loss(
 def get_position_loss(
     neural_net,
     cosmology,
+    n_mesh: int,
     velocity_loss=False,
     correction_type = None,
+    weight_snapshots = False,
 ):
     @jax.jit
     def loss_fn(
         params,
-        grid_data,
         pos_lr,
         vel_lr,
         pos_hr,
         vel_hr,
         scale_factors,
     ):
-        n_mesh = grid_data.shape[1]
 
         pos_pm, vel_pm = odeint(
             make_ode_fn(
@@ -133,7 +134,12 @@ def get_position_loss(
         pos_pm %= n_mesh
         pos_hr %= n_mesh
 
-        sim_mse = get_mse_pos(pos_pm, pos_hr, box_size=n_mesh)
+        if weight_snapshots:
+            #snapshot_weights = 1./bkgrd.growth_factor(cosmology, scale_factors)[:,None] 
+            snapshot_weights = (1./scale_factors**1.5)[:,None]
+        else:
+            snapshot_weights = None
+        sim_mse = get_mse_pos(pos_pm, pos_hr, box_size=n_mesh, snapshot_weights=snapshot_weights,)
         if velocity_loss:
             sim_mse += jnp.sum((vel_pm - vel_hr) ** 2, axis=-1)
         return sim_mse
@@ -145,8 +151,11 @@ def get_mse_pos(
     x,
     y,
     box_size=1.0,
+    snapshot_weights=None,
 ):
     dx = x - y
     if box_size is not None:
         dx = dx - box_size * jnp.round(dx / box_size)
+    if snapshot_weights is not None:
+        return jnp.mean(snapshot_weights * jnp.sum(dx**2, axis=-1))
     return jnp.mean(jnp.sum(dx**2, axis=-1))

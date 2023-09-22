@@ -45,6 +45,7 @@ def build_loss_fn(
     neural_net,
     cosmology,
     correction_type,
+    weight_snapshots: bool = False,
 ):
     if loss == "mse_frozen_potential":
         single_loss_fn = get_frozen_potential_loss(
@@ -93,6 +94,8 @@ def build_loss_fn(
             neural_net=neural_net,
             cosmology=cosmology,
             correction_type=correction_type,
+            weight_snapshots=weight_snapshots,
+            n_mesh=config.data.mesh_lr,
         )
 
         def loss_fn(
@@ -102,7 +105,6 @@ def build_loss_fn(
         ):
             return single_loss_fn(
                 params,
-                dataset["lr"].grid,
                 dataset["lr"].positions * dataset["lr"].mesh,
                 dataset["lr"].velocities * dataset["lr"].mesh,
                 dataset["hr"].positions * dataset["lr"].mesh,
@@ -280,6 +282,7 @@ def train_step(
         params,
     ):
         batch = next(train_data.iterator)
+        batch = train_data.move_to_device(batch, device=jax.devices()[0])
         return loss_fn(
             params=params,
             dataset=batch,
@@ -303,6 +306,7 @@ def train_step(
     if step % config.training.batch_size == 0:
         val_loss = 0.0
         for val_batch in val_data:
+            val_batch = val_data.move_to_device(val_batch, device=jax.devices()[0])
             val_loss += loss_fn(
                 params,
                 val_batch,
@@ -358,13 +362,16 @@ def train(
         neural_net,
         cosmology,
         correction_type=config.correction_model.type,
+        weight_snapshots=config.training.weight_snapshots,
     )
     optimizer, opt_state = build_optimizer(
         config.training,
         params=params,
     )
 
-    print_initial_lr_loss(val_data)
+    print_initial_lr_loss(
+        val_data,
+    )
     early_stop = EarlyStopping(patience=config.training.patience)
     best_params = None
     pbar = tqdm(range(config.training.n_steps))

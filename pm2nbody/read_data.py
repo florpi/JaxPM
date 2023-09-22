@@ -1,4 +1,5 @@
 from pathlib import Path
+import jax
 from typing import Optional, List
 from dataclasses import dataclass
 import jax.numpy as jnp
@@ -43,6 +44,7 @@ def get_data(
     box_size: Optional[float] = 256.0,
     normalize_to_box: Optional[bool] = True,
     idx: Optional[int] = 0,
+    move_to_cpu: bool = True,
 ):
     pos = jnp.load(data_dir / f"pos_m{n_mesh}_s{idx}.npy")
     if snapshots is None:
@@ -75,6 +77,14 @@ def get_data(
         return pos, vel, gravitational_potential
     potential_grid = jnp.load(data_dir / f"pot_grid_m{n_mesh}_s{idx}.npy")[snapshots]
     density_grid = jnp.load(data_dir / f"dens_grid_m{n_mesh}_s{idx}.npy")[snapshots]
+    # Move all data to cpu:
+    if move_to_cpu:
+        cpu = jax.devices('cpu')[0]
+        pos = jax.device_put(pos, cpu)
+        vel = jax.device_put(vel, cpu)
+        gravitational_potential = jax.device_put(gravitational_potential, cpu)
+        potential_grid = jax.device_put(potential_grid, cpu)
+        density_grid = jax.device_put(density_grid, cpu)
     return pos, vel, gravitational_potential, potential_grid, density_grid
 
 
@@ -94,6 +104,13 @@ class ResolutionData:
         if self.potential_grid is not None and self.density_grid is not None:
             self.grid = jnp.stack([self.potential_grid, self.density_grid], axis=-1)
 
+    def move_to_device(
+        self,
+        device,
+    ):
+        self.positions = jax.device_put(self.positions, device)
+        self.velocities = jax.device_put(self.velocities , device)
+        self.mesh = jax.device_put(self.mesh, device)
 
 class PMDataset:
     def __init__(
@@ -111,6 +128,14 @@ class PMDataset:
         self,
     ):
         return len(self.hr)
+
+    def move_to_device(self, batch_data, device):
+        batch_data['hr'].move_to_device(device)
+        batch_data['lr'].move_to_device(device)
+        return {
+            'hr': batch_data['hr'],
+            'lr': batch_data['lr'],
+        }
 
     def __getitem__(self, idx):
         high_res_data = self.hr[idx]
