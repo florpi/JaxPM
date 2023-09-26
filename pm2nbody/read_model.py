@@ -22,6 +22,7 @@ def get_cnn_neural_net(config):
             pad_periodic=config["pad_periodic"],
             output_dim=1,
             kernel_size=config["kernel_size"],
+            global_conditioning=config['global_conditioning'],
         )
         return cnn(
             x,
@@ -49,8 +50,14 @@ def get_kcorr_neural_net(config):
 
 def read_model(
     path_to_model: Path,
+    step=None,
 ):
-    pkl_file = list(path_to_model.glob("best*.pkl"))[0]
+    if step is not None:
+        print(list(path_to_model.glob(f"*_{step}.pkl")))
+        pkl_file = list(path_to_model.glob(f"*_{step}.pkl"))[0]
+    else: 
+        pkl_file = list(path_to_model.glob("best*.pkl"))[0]
+
     with open(pkl_file, "rb") as f:
         params = pickle.load(f)
 

@@ -157,6 +157,7 @@ def load_dataset_for_sim_idx_list(
     mesh_hr,
     mesh_lr,
     data_dir,
+    box_size,
     snapshots=None,
 ):
     grid_factor = mesh_hr / mesh_lr
@@ -167,6 +168,7 @@ def load_dataset_for_sim_idx_list(
             n_mesh=mesh_hr,
             downsampling_factor=None,  # mesh_hr // mesh_lr,
             idx=idx,
+            box_size=box_size,
             snapshots=snapshots,
         )
         pos_lr, vel_lr, grav_pot_lr, grav_pot_grid_lr, dens_grid_lr = get_data(
@@ -174,6 +176,7 @@ def load_dataset_for_sim_idx_list(
             n_mesh=mesh_lr,
             get_grids=True,
             idx=idx,
+            box_size=box_size,
             snapshots=snapshots,
         )
         particle_factor = len(pos_hr[0]) / len(pos_lr[0])
@@ -198,6 +201,7 @@ def load_datasets(
     mesh_hr,
     mesh_lr,
     data_dir,
+    box_size,
     snapshots=None,
 ):
     val_idx_list = list(range(n_val_sims))
@@ -207,6 +211,7 @@ def load_datasets(
         mesh_hr,
         mesh_lr,
         data_dir,
+        box_size=box_size,
         snapshots=snapshots,
     )
     val_low_res_data, val_high_res_data = load_dataset_for_sim_idx_list(
@@ -214,6 +219,7 @@ def load_datasets(
         mesh_hr,
         mesh_lr,
         data_dir,
+        box_size=box_size,
         snapshots=snapshots,
     )
     return PMDataset(

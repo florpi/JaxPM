@@ -110,15 +110,16 @@ def run_simulation(
 
 if __name__ == "__main__":
     out_dir = Path("/n/holystore01/LABS/itc_lab/Users/ccuestalazaro/pm2nbody/data/")
-    mesh_hr = 128
+    mesh_hr = 128 
     mesh_lr = 64
     n_particles = mesh_hr**3
-    out_dir /= f"matched_{mesh_lr}_{mesh_hr}"
+    n_snapshots = 25
+    snapshots = jnp.linspace(0.1, 1.0, n_snapshots)
+    L = 256.0
+    out_dir /= f"matched_{mesh_lr}_{mesh_hr}_L{L:.1f}_S{n_snapshots}"
     out_dir.mkdir(exist_ok=True, parents=True)
-    snapshots = jnp.linspace(0.1, 1.0, 25)
     mesh_shape_hr = (mesh_hr, mesh_hr, mesh_hr)
     mesh_shape_lr = (mesh_lr, mesh_lr, mesh_lr)
-    L = 256.0
     box_size = [L, L, L]
     omega_c = 0.25
     sigma8 = 0.8

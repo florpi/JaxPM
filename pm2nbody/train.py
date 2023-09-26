@@ -134,6 +134,7 @@ def build_network(config):
                 embed_globals=config.embed_globals,
                 n_globals_embedding=config.n_globals_embedding,
                 globals_embedding_dim=config.globals_embedding_dim,
+                global_conditioning=config.global_conditioning,
             )
             return cnn(
                 x,
@@ -164,7 +165,7 @@ def initialize_network(
     rng = jax.random.PRNGKey(seed)
     grid_input_init = data_sample["lr"].grid[0]
     pos_init = data_sample["lr"].positions[0]
-    scale_init = jnp.array([1.0])
+    scale_init = jnp.array(1.0)
     if model_type == "kcorr":
         params = neural_net.init(
             rng,
@@ -193,7 +194,9 @@ def build_dataloader(
     n_train_sims = config.n_train_sims
     n_val_sims = config.n_val_sims
     snapshots = config.snapshots
-    data_dir /= f"matched_{mesh_lr}_{mesh_hr}/"
+    box_size = config.box_size
+    n_snapshots = config.n_snapshots
+    data_dir /= f"matched_{mesh_lr}_{mesh_hr}_L{box_size:.1f}_S{n_snapshots}/"
     scale_factors = jnp.load(data_dir / f"scale_factors.npy")
     if snapshots is not None:
         snapshots = jnp.array(snapshots)
@@ -205,6 +208,7 @@ def build_dataloader(
         mesh_lr=mesh_lr,
         data_dir=data_dir,
         snapshots=snapshots,
+        box_size=box_size,
     )
     return cosmology, scale_factors, train_data, val_data
 
@@ -408,6 +412,7 @@ def train(
             )
     best_loss = early_stop.best_metric
     checkpoint(run_dir=run_dir, params=best_params, loss=best_loss, prefix="best")
+    return best_loss
 
 
 if __name__ == "__main__":
@@ -417,4 +422,4 @@ if __name__ == "__main__":
     print("Running configuration")
     print(FLAGS.config)
     config = FLAGS.config
-    train(config)
+    best_loss = train(config)
