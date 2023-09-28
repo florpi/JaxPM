@@ -1,4 +1,6 @@
 from pathlib import Path
+import os
+os.environ['XLA_PYTHON_CLIENT_PREALLOCATE']='false'
 
 import yaml
 from functools import partial
