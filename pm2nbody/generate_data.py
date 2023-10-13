@@ -110,14 +110,16 @@ def run_simulation(
 
 if __name__ == "__main__":
     out_dir = Path("/n/holystore01/LABS/itc_lab/Users/ccuestalazaro/pm2nbody/data/")
-    mesh_lr = 128 
-    mesh_hr = 256 #128 
+    mesh_lr = 32  # 128
+    mesh_hr = 64  # 256 #128
     n_particles_sqrt_3 = mesh_lr
-    n_particles = n_particles_sqrt_3 ** 3#mesh_hr**3
+    n_particles = n_particles_sqrt_3**3  # mesh_hr**3
     n_snapshots = 25
     snapshots = jnp.linspace(0.1, 1.0, n_snapshots)
     L = 256.0
-    out_dir /= f"matched_{mesh_lr}_{mesh_hr}_L{L:.1f}_S{n_snapshots}_Np{n_particles_sqrt_3}"
+    out_dir /= (
+        f"matched_{mesh_lr}_{mesh_hr}_L{L:.1f}_S{n_snapshots}_Np{n_particles_sqrt_3}"
+    )
     out_dir.mkdir(exist_ok=True, parents=True)
     mesh_shape_hr = (mesh_hr, mesh_hr, mesh_hr)
     mesh_shape_lr = (mesh_lr, mesh_lr, mesh_lr)
@@ -157,6 +159,7 @@ if __name__ == "__main__":
             omega_c=omega_c,
             sigma8=sigma8,
         )
+
         # Run simulations
         pos_hr, vel_hr = run_simulation(
             mesh_hr,
@@ -164,7 +167,6 @@ if __name__ == "__main__":
             sigma8=sigma8,
             initial_conditions=ics_hr,
         )
-        print('Ran HR sim!')
         pos_lr, vel_lr = run_simulation(
             mesh_lr,
             omega_c=omega_c,

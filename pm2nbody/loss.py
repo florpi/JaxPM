@@ -1,16 +1,15 @@
 import jax
 import jax.numpy as jnp
-from jaxpm.painting import cic_paint, cic_read
+import numpy as np
+from jaxpm.painting import cic_paint, cic_read, compensate_cic
 from jaxpm.kernels import (
     fftk,
-    gradient_kernel,
     laplace_kernel,
     longrange_kernel,
-    PGD_kernel,
 )
+from jaxpm.utils import power_spectrum, cross_correlation_coefficients
 from jax.experimental.ode import odeint
-import jax_cosmo.background as bkgrd 
-from jaxpm.pm import make_ode_fn
+from jaxpm.pm import make_ode_fn, get_delta
 
 
 def get_gravitational_potential(
@@ -104,9 +103,13 @@ def get_position_loss(
     neural_net,
     cosmology,
     n_mesh: int,
-    velocity_loss=False,
-    correction_type = None,
-    weight_snapshots = False,
+    lambda_pos=1.0,
+    lambda_velocity=None,
+    lambda_density=None,
+    lambda_cross_corr=None,
+    correction_type=None,
+    weight_snapshots=False,
+    log_pos=False,
 ):
     @jax.jit
     def loss_fn(
@@ -117,7 +120,6 @@ def get_position_loss(
         vel_hr,
         scale_factors,
     ):
-
         pos_pm, vel_pm = odeint(
             make_ode_fn(
                 mesh_shape=(n_mesh, n_mesh, n_mesh),
@@ -133,29 +135,108 @@ def get_position_loss(
         )
         pos_pm %= n_mesh
         pos_hr %= n_mesh
-
         if weight_snapshots:
-            #snapshot_weights = 1./bkgrd.growth_factor(cosmology, scale_factors)[:,None] 
-            snapshot_weights = (1./scale_factors**1.5)[:,None]
+            snapshot_weights = (1.0 / scale_factors**1.7)[:, None]
         else:
             snapshot_weights = None
-        sim_mse = get_mse_pos(pos_pm, pos_hr, box_size=n_mesh, snapshot_weights=snapshot_weights,)
-        if velocity_loss:
-            sim_mse += jnp.sum((vel_pm - vel_hr) ** 2, axis=-1)
-        return sim_mse
+        sim_mse = lambda_pos * get_mse_pos(
+            pos_pm,
+            pos_hr,
+            box_size=n_mesh,
+            snapshot_weights=snapshot_weights,
+            apply_log=log_pos,
+        )
+        if lambda_velocity is not None:
+            sim_mse += lambda_velocity * jnp.mean(
+                jnp.sum((vel_pm - vel_hr) ** 2, axis=-1)
+            )
+        if lambda_density is not None:
+            sim_mse += lambda_density * get_density_loss(
+                pos_pm, pos_hr, n_mesh_lr=n_mesh, n_mesh_hr=2 * n_mesh
+            )
+        if lambda_cross_corr is not None:
+            sim_mse += lambda_cross_corr * get_cross_corr_loss(
+                pos_pm, pos_hr, n_mesh_lr=n_mesh, n_mesh_hr=2 * n_mesh
+            )
+        return sim_mse, pos_pm
 
     return loss_fn
+
+
+def get_cross_corr_loss(pos_pm, pos_hr, n_mesh_lr, n_mesh_hr, box_size=256.0):
+    cross_corrs = []
+    for i in range(len(pos_pm)):
+        delta_pm = get_delta(
+            pos_pm[i] / n_mesh_lr * n_mesh_hr,
+            mesh_shape=(n_mesh_hr, n_mesh_hr, n_mesh_hr),
+        )
+        delta_hr = get_delta(
+            pos_hr[i] / n_mesh_lr * n_mesh_hr,
+            mesh_shape=(n_mesh_hr, n_mesh_hr, n_mesh_hr),
+        )
+        k, pk_hr = power_spectrum(
+            compensate_cic(delta_hr),
+            boxsize=np.array([box_size] * 3),
+            kmin=np.pi / box_size,
+            dk=2 * np.pi / box_size,
+        )
+        k, pk_pm = power_spectrum(
+            compensate_cic(delta_pm),
+            boxsize=np.array([box_size] * 3),
+            kmin=np.pi / box_size,
+            dk=2 * np.pi / box_size,
+        )
+        cross_corrs.append(
+            cross_correlation_coefficients(
+                compensate_cic(delta_hr),
+                compensate_cic(delta_pm),
+                boxsize=np.array([box_size] * 3),
+                kmin=np.pi / box_size,
+                dk=2 * np.pi / box_size,
+            )[1]
+            / jnp.sqrt(pk_hr)
+            / jnp.sqrt(pk_pm)
+        )
+    return -jnp.mean(jnp.stack(cross_corrs))
+
+
+def get_density_loss(
+    pos_pm,
+    pos_hr,
+    n_mesh_lr,
+    n_mesh_hr,
+):
+    delta_pms, delta_hrs = [], []
+    for i in range(len(pos_pm)):
+        delta_pms.append(
+            get_delta(
+                pos_pm[i] / n_mesh_lr * n_mesh_hr,
+                mesh_shape=(n_mesh_hr, n_mesh_hr, n_mesh_hr),
+            )
+        )
+        delta_hrs.append(
+            get_delta(
+                pos_hr[i] / n_mesh_lr * n_mesh_hr,
+                mesh_shape=(n_mesh_hr, n_mesh_hr, n_mesh_hr),
+            )
+        )
+    delta_pms = jnp.stack(delta_pms)
+    delta_hrs = jnp.stack(delta_hrs)
+    return jnp.mean((delta_pms - delta_hrs) ** 2)
 
 
 def get_mse_pos(
     x,
     y,
     box_size=1.0,
+    apply_log=False,
     snapshot_weights=None,
 ):
     dx = x - y
     if box_size is not None:
         dx = dx - box_size * jnp.round(dx / box_size)
+    if apply_log:
+        dx = jnp.log(jnp.abs(dx))
     if snapshot_weights is not None:
         return jnp.mean(snapshot_weights * jnp.sum(dx**2, axis=-1))
     return jnp.mean(jnp.sum(dx**2, axis=-1))

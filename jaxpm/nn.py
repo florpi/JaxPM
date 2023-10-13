@@ -65,8 +65,8 @@ class NeuralSplineFourierFilter(hk.Module):
 class Rescale(hk.Module):
     def __init__(self, n_input):
         super().__init__()
-        self.scale = hk.get_parameter("scale", [n_input], init=jnp.ones)
-        self.bias = hk.get_parameter("bias", [n_input], init=jnp.zeros)
+        self.scale = hk.get_parameter("scale", [n_input], init=jnp.ones, dtype=jnp.float64)
+        self.bias = hk.get_parameter("bias", [n_input], init=jnp.zeros, dtype=jnp.float64)
 
     def __call__(self, x):
         return self.scale * x + self.bias
@@ -213,12 +213,7 @@ class CNN(hk.Module):
         )
         return jnp.concatenate([features_at_pos, broadcast_globals], axis=-1)
 
-    def __call__(
-        self,
-        x,
-        positions,
-        global_features=None,
-    ):
+    def get_feature_maps(self, x, global_features=None):
         if global_features is not None:
             if global_features.ndim < 2:
                 global_features = jnp.expand_dims(global_features, axis=0)
@@ -226,10 +221,21 @@ class CNN(hk.Module):
                     global_features = jnp.expand_dims(global_features, axis=0)
             if self.embed_globals:
                 global_features = self.globals_fcn(global_features)
-        if positions.ndim == 1:
-            positions = positions[None, ...]
         x = self.learned_norm(x)  # [LR, LR, LR, input_dim]
         x, global_features = self.conv_block((x, global_features))  # [LR, LR, LR, n_channels_hidden]
+        return x, global_features
+
+
+    def __call__(
+        self,
+        x,
+        positions,
+        global_features=None,
+        return_features=False,
+    ):
+        x, global_features = self.get_feature_maps(x=x, global_features=global_features,)
+        if positions.ndim == 1:
+            positions = positions[None, ...]
         # swap axes to make the last axis the feature axis for the linear layers
         features_at_pos = self.read_featues_at_pos(x, positions).swapaxes(-2, -1)
         # [n_particles, n_channels_hidden]
@@ -242,4 +248,6 @@ class CNN(hk.Module):
             # [n_particles, n_channels_hidden + 1]
         features_at_pos = self.fcn_block(features_at_pos)
         # [n_particles, output_dim]
+        if return_features:
+            return features_at_pos, x
         return features_at_pos

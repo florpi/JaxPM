@@ -52,6 +52,23 @@ def get_corrected_potential_fn(model, params, grid_data, a):
 
     return get_corrected_potential
 
+def get_cnn_force(kvec, delta_k, positions, delta, model, params,a, r_split=0):
+    pm_force, pm_pot = potential_kgrid_to_force_at_pos(
+            delta_k=delta_k,
+            kvec=kvec,
+            positions=positions,
+            r_split=r_split,
+            return_potential=True,
+    )
+    grid_data = jnp.stack([pm_pot, delta], axis=-1)
+    get_corrected_potential = get_corrected_potential_fn(model, params, grid_data, a)
+    corrected_potential_grad = jax.vmap(
+        jax.grad(get_corrected_potential),
+        in_axes=(0),
+    )(positions)
+    pm_force += corrected_potential_grad
+    return pm_force
+
 
 def pm_forces(
     positions,
@@ -82,21 +99,7 @@ def pm_forces(
             r_split=r_split,
         )
     elif add_correction == "cnn":
-        pm_force, pm_pot = potential_kgrid_to_force_at_pos(
-            delta_k=delta_k,
-            kvec=kvec,
-            positions=positions,
-            r_split=r_split,
-            return_potential=True,
-        )
-        grid_data = jnp.stack([pm_pot, delta], axis=-1)
-        get_corrected_potential = get_corrected_potential_fn(model, params, grid_data, a)
-        corrected_potential_grad = jax.vmap(
-            jax.grad(get_corrected_potential),
-            in_axes=(0),
-        )(positions)
-        pm_force += corrected_potential_grad
-        return pm_force
+        return get_cnn_force(kvec=kvec, delta_k=delta_k, positions=positions, delta=delta, model=model, params=params, a=a, r_split=r_split)
     elif add_correction == "kcorr":
         kk = jnp.sqrt(sum((ki / jnp.pi) ** 2 for ki in kvec))
         delta_k = delta_k * (1.0 + model.apply(params, kk, jnp.atleast_1d(a)))
@@ -106,7 +109,21 @@ def pm_forces(
             kvec=kvec,
             r_split=r_split,
         )
-
+    elif add_correction == 'cnn+kcorr':
+        kk = jnp.sqrt(sum((ki / jnp.pi) ** 2 for ki in kvec))
+        delta_k = delta_k * (1.0 + model['kcorr'].apply(params['kcorr'], kk, jnp.atleast_1d(a)))
+        delta = jnp.fft.irfftn(delta_k)
+        return get_cnn_force(kvec=kvec, delta_k=delta_k, positions=positions, delta=delta, model=model['cnn'], params=params['cnn'], a=a, r_split=r_split)
+    elif add_correction == 'cnn_force':
+        pm_force, pm_pot = potential_kgrid_to_force_at_pos(
+            delta_k=delta_k,
+            kvec=kvec,
+            positions=positions,
+            r_split=r_split,
+            return_potential=True,
+        )
+        grid_data = jnp.stack([pm_pot, delta], axis=-1)
+        return pm_force +  model.apply(params, grid_data, positions, a).squeeze()
     else:
         raise NotImplementedError(f"add_correction={add_correction} not implemented")
 

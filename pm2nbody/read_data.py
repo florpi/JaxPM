@@ -79,7 +79,7 @@ def get_data(
     density_grid = jnp.load(data_dir / f"dens_grid_m{n_mesh}_s{idx}.npy")[snapshots]
     # Move all data to cpu:
     if move_to_cpu:
-        cpu = jax.devices('cpu')[0]
+        cpu = jax.devices("cpu")[0]
         pos = jax.device_put(pos, cpu)
         vel = jax.device_put(vel, cpu)
         gravitational_potential = jax.device_put(gravitational_potential, cpu)
@@ -109,8 +109,9 @@ class ResolutionData:
         device,
     ):
         self.positions = jax.device_put(self.positions, device)
-        self.velocities = jax.device_put(self.velocities , device)
+        self.velocities = jax.device_put(self.velocities, device)
         self.mesh = jax.device_put(self.mesh, device)
+
 
 class PMDataset:
     def __init__(
@@ -130,11 +131,11 @@ class PMDataset:
         return len(self.hr)
 
     def move_to_device(self, batch_data, device):
-        batch_data['hr'].move_to_device(device)
-        batch_data['lr'].move_to_device(device)
+        batch_data["hr"].move_to_device(device)
+        batch_data["lr"].move_to_device(device)
         return {
-            'hr': batch_data['hr'],
-            'lr': batch_data['lr'],
+            "hr": batch_data["hr"],
+            "lr": batch_data["lr"],
         }
 
     def __getitem__(self, idx):
@@ -159,6 +160,7 @@ def load_dataset_for_sim_idx_list(
     data_dir,
     box_size,
     snapshots=None,
+    move_to_cpu=True,
 ):
     grid_factor = mesh_hr / mesh_lr
     low_res_data, high_res_data = [], []
@@ -170,6 +172,7 @@ def load_dataset_for_sim_idx_list(
             idx=idx,
             box_size=box_size,
             snapshots=snapshots,
+            move_to_cpu=move_to_cpu,
         )
         pos_lr, vel_lr, grav_pot_lr, grav_pot_grid_lr, dens_grid_lr = get_data(
             data_dir=data_dir,
@@ -178,6 +181,7 @@ def load_dataset_for_sim_idx_list(
             idx=idx,
             box_size=box_size,
             snapshots=snapshots,
+            move_to_cpu=move_to_cpu,
         )
         particle_factor = len(pos_hr[0]) / len(pos_lr[0])
         up_resolution_factor = particle_factor / grid_factor
