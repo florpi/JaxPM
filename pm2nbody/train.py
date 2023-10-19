@@ -133,7 +133,7 @@ def build_loss_fn(
     return loss_fn
 
 
-def build_network(config):
+def build_network(config, low_res_mesh=32,):
     def CNNCorr(
         x,
         positions,
@@ -153,6 +153,7 @@ def build_network(config):
             global_conditioning=config.global_conditioning,
             use_attention_interpolation=config.use_attention_interpolation,
             add_particle_velocities=config.add_particle_velocities,
+            low_res_mesh=low_res_mesh,
         )
         return cnn(
             x,
@@ -479,7 +480,7 @@ def train(
     data_dir=Path(f"/n/holystore01/LABS/itc_lab/Users/ccuestalazaro/pm2nbody/data/"),
     output_dir=Path("/n/holystore01/LABS/itc_lab/Users/ccuestalazaro/pm2nbody/models/"),
 ):
-    neural_net = build_network(config.correction_model)
+    neural_net = build_network(config.correction_model, low_res_mesh=config.data.mesh_lr,)
     cosmology, scale_factors, train_data, val_data, test_data = build_dataloader(
         config.data,
         data_dir=data_dir,

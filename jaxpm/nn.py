@@ -174,8 +174,7 @@ class AttentionRead(hk.Module):
         )
 
     def compute_attention(self, query, key):
-        return jax.nn.softmax(jnp.dot(query, key.T))
-
+        return jax.nn.softmax(jnp.sum(query*key,axis=-1))
 
     def __call__(self, mesh, positions,):
             positions = jnp.expand_dims(positions,1)
@@ -199,8 +198,7 @@ class AttentionRead(hk.Module):
             key = jax.vmap(self.mlp_mesh)(neighbour_mesh[...,None])
             # Using vmap for compute_attention and dot product
             attention_weights = jax.vmap(self.compute_attention)(query, key)
-            dot_product = jax.vmap(jnp.dot)(attention_weights, neighbour_mesh)
-            return jnp.sum(dot_product, axis=-1)
+            return jax.vmap(jnp.dot)(attention_weights, neighbour_mesh)
 
 
 
@@ -220,6 +218,7 @@ class CNN(hk.Module):
         global_conditioning: Optional[str] = None,
         use_attention_interpolation: bool = False,
         add_particle_velocities: bool = False,
+        low_res_mesh:int =32,
     ):
         super().__init__(name="CNN")
         self.kernel_size = kernel_size
@@ -258,6 +257,7 @@ class CNN(hk.Module):
                 output_sizes = [globals_embedding_dim]*n_globals_embedding,
             )
         self.add_particle_velocities = add_particle_velocities
+        self.low_res_mesh = low_res_mesh
 
     def concatenate_globals(self, features_at_pos, global_features):
         broadcast_globals = jnp.broadcast_to(
@@ -294,7 +294,7 @@ class CNN(hk.Module):
         if positions.ndim == 1:
             positions = positions[None, ...]
         # swap axes to make the last axis the feature axis for the linear layers
-        features_at_pos = self.read_features_at_pos(x, x.shape[1]*positions).swapaxes(-2, -1)
+        features_at_pos = self.read_features_at_pos(x, self.low_res_mesh*positions).swapaxes(-2, -1)
         # [n_particles, n_channels_hidden]
         # Add time as a feature
         if global_features is not None:
