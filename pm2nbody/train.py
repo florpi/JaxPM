@@ -112,6 +112,7 @@ def build_loss_fn(
             lambda_density=training_config.lambda_density,
             lambda_cross_corr=training_config.lambda_cross_corr,
             log_pos=training_config.log_pos,
+            fractional_mse = training_config.fractional_mse,
         )
 
         def loss_fn(
@@ -150,6 +151,8 @@ def build_network(config):
             n_globals_embedding=config.n_globals_embedding,
             globals_embedding_dim=config.globals_embedding_dim,
             global_conditioning=config.global_conditioning,
+            use_attention_interpolation=config.use_attention_interpolation,
+            add_particle_velocities=config.add_particle_velocities,
         )
         return cnn(
             x,
@@ -238,16 +241,17 @@ def build_dataloader(
     if snapshots is not None:
         snapshots = jnp.array(snapshots)
         scale_factors = scale_factors[snapshots]
-    train_data, val_data = load_datasets(
+    train_data, val_data, test_data = load_datasets(
         n_train_sims,
         n_val_sims,
+        1,
         mesh_hr=mesh_hr,
         mesh_lr=mesh_lr,
         data_dir=data_dir,
         snapshots=snapshots,
         box_size=box_size,
     )
-    return cosmology, scale_factors, train_data, val_data
+    return cosmology, scale_factors, train_data, val_data, test_data
 
 
 def build_schedule(config):
@@ -264,7 +268,7 @@ def build_schedule(config):
             factor=config.factor,
             patience=config.patience,
             min_lr=config.min_lr,
-        )  # .get_schedule()
+        )  
 
 
 def build_optimizer(
@@ -296,6 +300,7 @@ def print_initial_lr_loss(
             get_mse_pos(
                 val_batch["hr"].positions * val_batch["lr"].mesh,
                 val_batch["lr"].positions * val_batch["lr"].mesh,
+                x_lr=val_batch["lr"].positions * val_batch["lr"].mesh,
                 box_size=val_batch["lr"].mesh,
             )
         )
@@ -316,7 +321,7 @@ def checkpoint(run_dir, loss, params, prefix, step=None):
         pickle.dump(state_dict, f)
 
 
-def plot_eval(val_pos_pm, val_data, box_size=256.0):
+def plot_eval(val_pos_pm, val_data, box_size=256.0, fig_label='val',):
     mesh_plot = val_data["hr"].mesh
     delta_pm = get_delta(
         val_pos_pm[-1] / val_data["lr"].mesh * mesh_plot,
@@ -349,7 +354,7 @@ def plot_eval(val_pos_pm, val_data, box_size=256.0):
         a.set_xticks([])  # Remove x-ticks and labels
         a.set_yticks([])
     plt.tight_layout()
-    wandb.log({"delta": plt})
+    wandb.log({f"{fig_label}_delta": plt})
     plt.close()
     k, pk_hr = power_spectrum(
         compensate_cic(delta_hr),
@@ -386,7 +391,7 @@ def plot_eval(val_pos_pm, val_data, box_size=256.0):
     plt.legend()
     plt.xlabel(r"$k$ [$h \ \mathrm{Mpc}^{-1}$]")
     plt.ylabel(r"$P(k)/P_\mathrm{HR}(k)$")
-    wandb.log({"pk": plt})
+    wandb.log({f"{fig_label}_pk": plt})
 
 
 def train_step(
@@ -475,12 +480,13 @@ def train(
     output_dir=Path("/n/holystore01/LABS/itc_lab/Users/ccuestalazaro/pm2nbody/models/"),
 ):
     neural_net = build_network(config.correction_model)
-    cosmology, scale_factors, train_data, val_data = build_dataloader(
+    cosmology, scale_factors, train_data, val_data, test_data = build_dataloader(
         config.data,
         data_dir=data_dir,
     )
     print(f"Using {len(train_data)} sims for training")
     print(f"Using {len(val_data)} sims for val")
+    print(f"Using {len(test_data)} sims for test")
     params = initialize_network(
         train_data[0], neural_net=neural_net, model_type=config.correction_model.type
     )
@@ -559,6 +565,15 @@ def train(
             )
     best_loss = early_stop.best_metric
     checkpoint(run_dir=run_dir, params=best_params, loss=best_loss, prefix="best")
+    test_batch = val_data.move_to_device(test_data[0], device=jax.devices()[0])
+    test_loss, test_pos_pm = loss_fn(
+        best_params,
+        test_batch,
+        scale_factors,
+        max_idx=None,
+    )
+    print(f'Test loss = {test_loss:.5f}')
+    plot_eval(test_pos_pm, test_batch, fig_label='test')
     return best_loss
 
 

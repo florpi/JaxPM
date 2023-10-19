@@ -158,6 +158,51 @@ class FullyConnectedBlock(hk.Module):
     def __call__(self, x):
         return self.activation(self.fc(x))
 
+class AttentionRead(hk.Module):
+    def __init__(
+        self,
+        attn_hidden_dim=16,
+        attn_scores_dim = 16, 
+        n_fully_connected = 3,
+    ):
+        super().__init__()
+        self.mlp_distances = hk.nets.MLP(
+                output_sizes = [attn_hidden_dim]*n_fully_connected + [attn_scores_dim,],
+        )
+        self.mlp_mesh = hk.nets.MLP(
+                output_sizes = [attn_hidden_dim]*n_fully_connected + [attn_scores_dim,],
+        )
+
+    def compute_attention(self, query, key):
+        return jax.nn.softmax(jnp.dot(query, key.T))
+
+
+    def __call__(self, mesh, positions,):
+            positions = jnp.expand_dims(positions,1)
+            floor = jnp.floor(positions)
+            connection = jnp.array(
+                [
+                    [[0, 0, 0], [1., 0, 0], [0., 1, 0], 
+                    [0., 0, 1], [1., 1, 0], [1., 0, 1], 
+                    [0., 1, 1], [1., 1, 1]]
+                ]
+            )
+            neighbour_coords = floor + connection
+            distances = positions - neighbour_coords
+            neighbour_coords = jnp.mod(neighbour_coords.astype('int32'), jnp.array(mesh.shape))
+            neighbour_mesh = mesh[
+                neighbour_coords[...,0], 
+                neighbour_coords[...,1], 
+                neighbour_coords[...,3],
+            ]
+            query = jax.vmap(self.mlp_distances)(distances)
+            key = jax.vmap(self.mlp_mesh)(neighbour_mesh[...,None])
+            # Using vmap for compute_attention and dot product
+            attention_weights = jax.vmap(self.compute_attention)(query, key)
+            dot_product = jax.vmap(jnp.dot)(attention_weights, neighbour_mesh)
+            return jnp.sum(dot_product, axis=-1)
+
+
 
 class CNN(hk.Module):
     def __init__(
@@ -173,6 +218,8 @@ class CNN(hk.Module):
         pad_periodic: bool = True,
         embed_globals: bool = True,
         global_conditioning: Optional[str] = None,
+        use_attention_interpolation: bool = False,
+        add_particle_velocities: bool = False,
     ):
         super().__init__(name="CNN")
         self.kernel_size = kernel_size
@@ -191,10 +238,18 @@ class CNN(hk.Module):
                 for _ in range(n_convolutions)
             ]
         )
-        self.read_featues_at_pos = jax.vmap(
-            cic_read,
-            in_axes=(-1, None),
-        )
+        self.use_attention_interpolation = use_attention_interpolation 
+        if use_attention_interpolation:
+            attention_read = AttentionRead()
+            self.read_features_at_pos = jax.vmap(
+                attention_read,
+                in_axes=(-1,None),
+            )
+        else:
+            self.read_features_at_pos = jax.vmap(
+                cic_read,
+                in_axes=(-1, None),
+            )
         self.fcn_block = hk.nets.MLP(
                 output_sizes = [channels_hidden_dim]*n_fully_connected + [output_dim,],
         )
@@ -202,6 +257,7 @@ class CNN(hk.Module):
             self.globals_fcn = hk.nets.MLP(
                 output_sizes = [globals_embedding_dim]*n_globals_embedding,
             )
+        self.add_particle_velocities = add_particle_velocities
 
     def concatenate_globals(self, features_at_pos, global_features):
         broadcast_globals = jnp.broadcast_to(
@@ -232,12 +288,13 @@ class CNN(hk.Module):
         positions,
         global_features=None,
         return_features=False,
+        velocities=None,
     ):
         x, global_features = self.get_feature_maps(x=x, global_features=global_features,)
         if positions.ndim == 1:
             positions = positions[None, ...]
         # swap axes to make the last axis the feature axis for the linear layers
-        features_at_pos = self.read_featues_at_pos(x, positions).swapaxes(-2, -1)
+        features_at_pos = self.read_features_at_pos(x, x.shape[1]*positions).swapaxes(-2, -1)
         # [n_particles, n_channels_hidden]
         # Add time as a feature
         if global_features is not None:
@@ -246,6 +303,8 @@ class CNN(hk.Module):
                 global_features,
             )
             # [n_particles, n_channels_hidden + 1]
+        if self.add_particle_velocities:
+            features_at_pos = jnp.concatenate([features_at_pos, velocities], axis=-1)
         features_at_pos = self.fcn_block(features_at_pos)
         # [n_particles, output_dim]
         if return_features:

@@ -110,6 +110,7 @@ def get_position_loss(
     correction_type=None,
     weight_snapshots=False,
     log_pos=False,
+    fractional_mse=False,
 ):
     @jax.jit
     def loss_fn(
@@ -140,11 +141,13 @@ def get_position_loss(
         else:
             snapshot_weights = None
         sim_mse = lambda_pos * get_mse_pos(
-            pos_pm,
-            pos_hr,
+            x=pos_pm,
+            y=pos_hr,
+            x_lr=pos_lr,
             box_size=n_mesh,
             snapshot_weights=snapshot_weights,
             apply_log=log_pos,
+            fractional=fractional_mse,
         )
         if lambda_velocity is not None:
             sim_mse += lambda_velocity * jnp.mean(
@@ -162,6 +165,35 @@ def get_position_loss(
 
     return loss_fn
 
+
+def get_pk_loss(pos_pm, pos_hr, n_mesh_lr, n_mesh_hr, box_size=256.0):
+    ratio = []
+    for i in range(len(pos_pm)):
+        delta_pm = get_delta(
+            pos_pm[i] / n_mesh_lr * n_mesh_hr,
+            mesh_shape=(n_mesh_hr, n_mesh_hr, n_mesh_hr),
+        )
+        delta_hr = get_delta(
+            pos_hr[i] / n_mesh_lr * n_mesh_hr,
+            mesh_shape=(n_mesh_hr, n_mesh_hr, n_mesh_hr),
+        )
+        k, pk_hr = power_spectrum(
+            compensate_cic(delta_hr),
+            boxsize=np.array([box_size] * 3),
+            kmin=np.pi / box_size,
+            dk=2 * np.pi / box_size,
+        )
+        k, pk_pm = power_spectrum(
+            compensate_cic(delta_pm),
+            boxsize=np.array([box_size] * 3),
+            kmin=np.pi / box_size,
+            dk=2 * np.pi / box_size,
+        )
+        ratio.append(
+            pk_pm / pk_hr
+        )
+
+    return jnp.mean(jnp.sum((jnp.stack(ratio)-1)**2,axis=-1))
 
 def get_cross_corr_loss(pos_pm, pos_hr, n_mesh_lr, n_mesh_hr, box_size=256.0):
     cross_corrs = []
@@ -228,9 +260,11 @@ def get_density_loss(
 def get_mse_pos(
     x,
     y,
+    x_lr,
     box_size=1.0,
     apply_log=False,
     snapshot_weights=None,
+    fractional=False,
 ):
     dx = x - y
     if box_size is not None:
@@ -239,4 +273,9 @@ def get_mse_pos(
         dx = jnp.log(jnp.abs(dx))
     if snapshot_weights is not None:
         return jnp.mean(snapshot_weights * jnp.sum(dx**2, axis=-1))
+    elif fractional:
+        dx_lr = x_lr - y
+        if box_size is not None:
+            dx_lr = dx_lr - box_size * jnp.round(dx_lr / box_size)
+        return jnp.mean(jnp.sum(dx**2, axis=-1) / jnp.sum(dx_lr**2, axis=-1))
     return jnp.mean(jnp.sum(dx**2, axis=-1))

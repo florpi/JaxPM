@@ -29,10 +29,11 @@ def get_config():
     training.lambda_density = None
     training.lambda_cross_corr = None
     training.weight_snapshots = False
-    training.sample_snapshots = False
+    training.fractional_mse = True 
+    training.sample_snapshots = False 
     training.weight_decay = 1.0e-5
     training.batch_size = 2
-    training.n_steps = 800
+    training.n_steps = 26 
     training.checkpoint_every = 20
     training.patience = 10
     training.schedule = schedule = ml_collections.ConfigDict()
@@ -56,4 +57,5 @@ def get_config():
     correction_model.globals_embedding_dim = 16
     correction_model.n_knots = 16
     correction_model.latent_size = 32
+    correction_model.use_attention_interpolation = False 
     return config

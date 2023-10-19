@@ -202,6 +202,7 @@ def load_dataset_for_sim_idx_list(
 def load_datasets(
     n_train_sims,
     n_val_sims,
+    n_test_sims,
     mesh_hr,
     mesh_lr,
     data_dir,
@@ -210,6 +211,7 @@ def load_datasets(
 ):
     val_idx_list = list(range(n_val_sims))
     train_idx_list = list(range(n_val_sims, n_val_sims + n_train_sims))
+    test_idx_list = list(range(n_val_sims+n_train_sims, n_val_sims + n_train_sims+n_test_sims,))
     train_low_res_data, train_high_res_data = load_dataset_for_sim_idx_list(
         train_idx_list,
         mesh_hr,
@@ -226,8 +228,16 @@ def load_datasets(
         box_size=box_size,
         snapshots=snapshots,
     )
+    test_low_res_data, test_high_res_data = load_dataset_for_sim_idx_list(
+        test_idx_list,
+        mesh_hr,
+        mesh_lr,
+        data_dir,
+        box_size=box_size,
+        snapshots=snapshots,
+    )
     return PMDataset(
         train_high_res_data,
         train_low_res_data,
         infinite=True,
-    ), PMDataset(val_high_res_data, val_low_res_data)
+    ), PMDataset(val_high_res_data, val_low_res_data), PMDataset(test_high_res_data, test_low_res_data)
