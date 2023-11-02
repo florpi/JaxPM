@@ -48,7 +48,7 @@ def potential_kgrid_to_force_at_pos(
 
 def get_corrected_potential_fn(model, params, grid_data, a):
     def get_corrected_potential(positions, velocities):
-        return model.apply(params, grid_data, positions, velocities, a).squeeze()
+        return model.apply(params, grid_data, positions, a, velocities).squeeze()
 
     return get_corrected_potential
 

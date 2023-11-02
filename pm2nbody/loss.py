@@ -107,6 +107,7 @@ def get_position_loss(
     lambda_velocity=None,
     lambda_density=None,
     lambda_cross_corr=None,
+    lambda_pk=None,
     correction_type=None,
     weight_snapshots=False,
     log_pos=False,
@@ -161,6 +162,11 @@ def get_position_loss(
             sim_mse += lambda_cross_corr * get_cross_corr_loss(
                 pos_pm, pos_hr, n_mesh_lr=n_mesh, n_mesh_hr=2 * n_mesh
             )
+        if lambda_pk is not None:
+            sim_mse += lambda_pk * get_pk_loss(
+                pos_pm, pos_hr, n_mesh_lr=n_mesh, n_mesh_hr=2 * n_mesh
+            )
+
         return sim_mse, pos_pm
 
     return loss_fn

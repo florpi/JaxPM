@@ -218,7 +218,6 @@ class CNN(hk.Module):
         global_conditioning: Optional[str] = None,
         use_attention_interpolation: bool = False,
         add_particle_velocities: bool = False,
-        low_res_mesh:int =32,
     ):
         super().__init__(name="CNN")
         self.kernel_size = kernel_size
@@ -257,7 +256,6 @@ class CNN(hk.Module):
                 output_sizes = [globals_embedding_dim]*n_globals_embedding,
             )
         self.add_particle_velocities = add_particle_velocities
-        self.low_res_mesh = low_res_mesh
 
     def concatenate_globals(self, features_at_pos, global_features):
         broadcast_globals = jnp.broadcast_to(
@@ -294,14 +292,14 @@ class CNN(hk.Module):
         if positions.ndim == 1:
             positions = positions[None, ...]
         # swap axes to make the last axis the feature axis for the linear layers
-        features_at_pos = self.read_features_at_pos(x, self.low_res_mesh*positions).swapaxes(-2, -1)
+        features_at_pos = self.read_features_at_pos(x, positions).swapaxes(-2, -1)
         # [n_particles, n_channels_hidden]
         # Add time as a feature
         if global_features is not None:
             features_at_pos = self.concatenate_globals(
                 features_at_pos,
                 global_features,
-            )
+            ).squeeze()
             # [n_particles, n_channels_hidden + 1]
         if self.add_particle_velocities:
             features_at_pos = jnp.concatenate([features_at_pos, velocities], axis=-1)

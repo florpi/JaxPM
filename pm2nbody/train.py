@@ -110,6 +110,7 @@ def build_loss_fn(
             lambda_pos=training_config.lambda_pos,
             lambda_velocity=training_config.lambda_velocity,
             lambda_density=training_config.lambda_density,
+            lambda_pk=training_config.lambda_pk,
             lambda_cross_corr=training_config.lambda_cross_corr,
             log_pos=training_config.log_pos,
             fractional_mse = training_config.fractional_mse,
@@ -133,11 +134,12 @@ def build_loss_fn(
     return loss_fn
 
 
-def build_network(config, low_res_mesh=32,):
+def build_network(config,):
     def CNNCorr(
         x,
         positions,
         scale_factors,
+        velocities,
     ):
         cnn = CNN(
             channels_hidden_dim=config.channels_hidden_dim,
@@ -153,12 +155,13 @@ def build_network(config, low_res_mesh=32,):
             global_conditioning=config.global_conditioning,
             use_attention_interpolation=config.use_attention_interpolation,
             add_particle_velocities=config.add_particle_velocities,
-            low_res_mesh=low_res_mesh,
         )
         return cnn(
-            x,
-            positions,
-            scale_factors,
+            x=x,
+            positions=positions,
+            global_features=scale_factors,
+            return_features=False,
+            velocities=velocities,
         )
 
     def KCorr(
@@ -190,6 +193,7 @@ def initialize_network(
     rng = jax.random.PRNGKey(seed)
     grid_input_init = data_sample["lr"].grid[0]
     pos_init = data_sample["lr"].positions[0]
+    vel_init = data_sample["lr"].velocities[0]
     scale_init = jnp.array(1.0)
     if model_type == "kcorr":
         params = neural_net.init(
@@ -203,6 +207,7 @@ def initialize_network(
             grid_input_init,
             pos_init,
             scale_init,
+            vel_init,
         )
     elif model_type == "cnn+kcorr":
         params = {}
@@ -216,6 +221,7 @@ def initialize_network(
             grid_input_init,
             pos_init,
             scale_init,
+            None
         )
     return params
 
@@ -295,7 +301,7 @@ def build_optimizer(
 def print_initial_lr_loss(
     val_data,
 ):
-    val_pos_loss, val_pot_loss = [], []
+    val_pos_loss, val_vel_loss, val_pot_loss = [], [], []
     for val_batch in val_data:
         val_pos_loss.append(
             get_mse_pos(
@@ -305,10 +311,14 @@ def print_initial_lr_loss(
                 box_size=val_batch["lr"].mesh,
             )
         )
+        val_vel_loss.append(
+            jnp.mean((val_batch["lr"].velocities * val_batch['lr'].mesh - val_batch["hr"].velocities * val_batch['lr'].mesh) ** 2)
+        )
         val_pot_loss.append(
             jnp.mean((val_batch["lr"].potential - val_batch["hr"].potential) ** 2)
         )
     print("Positions MSE = ", sum(val_pos_loss) / len(val_pos_loss))
+    print("Velocities MSE = ", sum(val_vel_loss) / len(val_vel_loss))
     print("Potential MSE = ", sum(val_pot_loss) / len(val_pot_loss))
 
 
@@ -322,17 +332,19 @@ def checkpoint(run_dir, loss, params, prefix, step=None):
         pickle.dump(state_dict, f)
 
 
-def plot_eval(val_pos_pm, val_data, box_size=256.0, fig_label='val',):
+def plot_eval(val_pos_pm, val_data, max_idx=None, box_size=256.0, fig_label='val',):
+    if max_idx is None:
+        max_idx = -1
     mesh_plot = val_data["hr"].mesh
     delta_pm = get_delta(
-        val_pos_pm[-1] / val_data["lr"].mesh * mesh_plot,
+        val_pos_pm[max_idx] / val_data["lr"].mesh * mesh_plot,
         (mesh_plot, mesh_plot, mesh_plot),
     )
     delta_hr = get_delta(
-        val_data["hr"].positions[-1] * mesh_plot, (mesh_plot, mesh_plot, mesh_plot)
+        val_data["hr"].positions[max_idx] * mesh_plot, (mesh_plot, mesh_plot, mesh_plot)
     )
     delta_lr = get_delta(
-        val_data["lr"].positions[-1] * mesh_plot, (mesh_plot, mesh_plot, mesh_plot)
+        val_data["lr"].positions[max_idx] * mesh_plot, (mesh_plot, mesh_plot, mesh_plot)
     )
     fig, ax = plt.subplots(ncols=3, figsize=(12, 5))
     cmap = "cividis"
@@ -452,6 +464,7 @@ def train_step(
             plot_eval(
                 val_pos_pm,
                 val_batch,
+                max_idx=max_idx,
             )
         has_improved, early_stop = early_stop.update(val_loss)
         if has_improved:
@@ -480,7 +493,7 @@ def train(
     data_dir=Path(f"/n/holystore01/LABS/itc_lab/Users/ccuestalazaro/pm2nbody/data/"),
     output_dir=Path("/n/holystore01/LABS/itc_lab/Users/ccuestalazaro/pm2nbody/models/"),
 ):
-    neural_net = build_network(config.correction_model, low_res_mesh=config.data.mesh_lr,)
+    neural_net = build_network(config.correction_model,)
     cosmology, scale_factors, train_data, val_data, test_data = build_dataloader(
         config.data,
         data_dir=data_dir,
@@ -524,11 +537,12 @@ def train(
     early_stop = EarlyStopping(patience=config.training.patience)
     best_params = None
     pbar = tqdm(range(config.training.n_steps))
+    rng = jax.random.PRNGKey(0)
     for step in pbar:
         if config.training.sample_snapshots:
-            rng = jax.random.PRNGKey(0)
+            rng, _ = jax.random.split(rng)
             max_idx = jax.random.randint(
-                rng, minval=1, maxval=len(scale_factors), shape=(1,)
+                rng, minval=10, maxval=len(scale_factors), shape=(1,)
             )[0]
         else:
             max_idx = None
@@ -574,7 +588,7 @@ def train(
         max_idx=None,
     )
     print(f'Test loss = {test_loss:.5f}')
-    plot_eval(test_pos_pm, test_batch, fig_label='test')
+    plot_eval(test_pos_pm, test_batch, max_idx=None, fig_label='test')
     return best_loss
 
 
